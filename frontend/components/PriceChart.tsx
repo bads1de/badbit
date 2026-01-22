@@ -1,7 +1,15 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { createChart, ColorType, ISeriesApi, CandlestickData, Time, CandlestickSeries } from "lightweight-charts";
+import {
+  createChart,
+  ColorType,
+  ISeriesApi,
+  CandlestickData,
+  Time,
+  CandlestickSeries,
+  IChartApi,
+} from "lightweight-charts";
 
 interface Props {
   trades: { price: number; timestamp: number }[];
@@ -10,36 +18,49 @@ interface Props {
 export default function PriceChart({ trades }: Props) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const seriesRef = useRef<ISeriesApi<"Candlestick">>(null);
+  const chartRef = useRef<IChartApi | null>(null);
 
   useEffect(() => {
     if (!chartContainerRef.current) return;
 
     const chart = createChart(chartContainerRef.current, {
       layout: {
-        background: { type: ColorType.Solid, color: "#0a0a0a" },
-        textColor: "#a3a3a3",
+        background: { type: ColorType.Solid, color: "#13141b" },
+        textColor: "#5e606e",
       },
       grid: {
-        vertLines: { color: "#171717" },
-        horzLines: { color: "#171717" },
+        vertLines: { color: "#1e1f29" },
+        horzLines: { color: "#1e1f29" },
       },
       width: chartContainerRef.current.clientWidth,
-      height: 300,
+      height: chartContainerRef.current.clientHeight, // Use parent height
+      timeScale: {
+        borderColor: "#1e1f29",
+        timeVisible: true,
+      },
+      rightPriceScale: {
+        borderColor: "#1e1f29",
+      },
     });
 
-    // In lightweight-charts v5, addCandlestickSeries is replaced by addSeries(CandlestickSeries, options)
     const series = chart.addSeries(CandlestickSeries, {
-      upColor: "#10b981",
-      downColor: "#e11d48",
+      upColor: "#26E8A6",
+      downColor: "#ff5353",
       borderVisible: false,
-      wickUpColor: "#10b981",
-      wickDownColor: "#e11d48",
+      wickUpColor: "#26E8A6",
+      wickDownColor: "#ff5353",
     });
 
     seriesRef.current = series;
+    chartRef.current = chart;
 
     const handleResize = () => {
-      chart.applyOptions({ width: chartContainerRef.current?.clientWidth });
+      if (chartContainerRef.current) {
+        chart.applyOptions({
+          width: chartContainerRef.current.clientWidth,
+          height: chartContainerRef.current.clientHeight,
+        });
+      }
     };
 
     window.addEventListener("resize", handleResize);
@@ -53,14 +74,11 @@ export default function PriceChart({ trades }: Props) {
   useEffect(() => {
     if (!seriesRef.current || trades.length === 0) return;
 
-    // Convert trades to 1-minute candlesticks
     const candles: Record<number, CandlestickData<Time>> = {};
-    
-    // Sort trades by timestamp (oldest first)
     const sortedTrades = [...trades].sort((a, b) => a.timestamp - b.timestamp);
 
     sortedTrades.forEach((t) => {
-      const minute = Math.floor(t.timestamp / 60000) * 60; // 1-min resolution in seconds
+      const minute = Math.floor(t.timestamp / 60000) * 60;
       if (!candles[minute]) {
         candles[minute] = {
           time: minute as Time,
@@ -78,7 +96,9 @@ export default function PriceChart({ trades }: Props) {
     });
 
     seriesRef.current.setData(Object.values(candles));
+    // Fit content optionally
+    // chartRef.current?.timeScale().fitContent();
   }, [trades]);
 
-  return <div ref={chartContainerRef} className="w-full h-[300px]" />;
+  return <div ref={chartContainerRef} className="w-full h-full min-h-100" />;
 }

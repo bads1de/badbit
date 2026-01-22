@@ -2,17 +2,12 @@
 
 import { useState } from "react";
 import { Side } from "@/types";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { ArrowDownCircle, ArrowUpCircle } from "lucide-react";
 
 export default function OrderEntry() {
   const [price, setPrice] = useState("");
   const [quantity, setQuantity] = useState("");
   const [side, setSide] = useState<Side>("Buy");
+  const [percent, setPercent] = useState(0);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -21,8 +16,8 @@ export default function OrderEntry() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          price: parseInt(price),
-          quantity: parseInt(quantity),
+          price: parseFloat(price),
+          quantity: parseFloat(quantity),
           side,
         }),
       });
@@ -33,82 +28,125 @@ export default function OrderEntry() {
     }
   };
 
-  const total = price && quantity ? (parseInt(price) * parseFloat(quantity)).toFixed(2) : "0.00";
-
   return (
-    <Card className="bg-zinc-950 border-zinc-800 shadow-2xl">
-      <CardHeader className="pb-4">
-        <CardTitle className="text-sm font-bold uppercase tracking-widest text-zinc-400">Trade BAD</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-6">
-        <Tabs defaultValue="Buy" onValueChange={(v) => setSide(v as Side)} className="w-full">
-          <TabsList className="grid w-full grid-cols-2 bg-zinc-900 p-1">
-            <TabsTrigger 
-              value="Buy" 
-              className="data-[state=active]:bg-emerald-600 data-[state=active]:text-white font-bold"
-            >
-              <ArrowUpCircle className="w-4 h-4 mr-2" />
-              BUY
-            </TabsTrigger>
-            <TabsTrigger 
-              value="Sell" 
-              className="data-[state=active]:bg-rose-600 data-[state=active]:text-white font-bold"
-            >
-              <ArrowDownCircle className="w-4 h-4 mr-2" />
-              SELL
-            </TabsTrigger>
-          </TabsList>
-        </Tabs>
+    <div className="flex flex-col h-full bg-[#1b1c25] p-3 text-sm">
+      {/* Buy/Sell Toggle */}
+      <div className="flex bg-black/40 rounded-lg p-1 mb-4">
+        <button
+          onClick={() => setSide("Buy")}
+          className={`flex-1 py-1.5 rounded-md font-bold text-center transition-colors ${
+            side === "Buy"
+              ? "bg-[#26E8A6] text-black"
+              : "text-zinc-400 hover:text-white"
+          }`}
+        >
+          Buy
+        </button>
+        <button
+          onClick={() => setSide("Sell")}
+          className={`flex-1 py-1.5 rounded-md font-bold text-center transition-colors ${
+            side === "Sell"
+              ? "bg-[#ff5353] text-black"
+              : "text-zinc-400 hover:text-white"
+          }`}
+        >
+          Sell
+        </button>
+      </div>
 
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div className="space-y-2">
-            <div className="flex justify-between items-center">
-              <Label className="text-[10px] text-zinc-500 font-bold uppercase">Price</Label>
-              <span className="text-[10px] text-zinc-600 font-bold">USDT</span>
-            </div>
-            <Input
+      <div className="flex justify-between text-xs text-zinc-400 mb-2">
+        <span>Available to Trade</span>
+        <span className="text-white font-mono">1,402.50 USDC</span>
+      </div>
+
+      <form onSubmit={handleSubmit} className="space-y-4">
+        {/* Order Type (Limit/Market/Stop) - Mock for now */}
+        <div className="flex gap-4 text-xs font-bold text-zinc-500 pb-2 border-b border-white/5">
+          <span className="text-white cursor-pointer">Limit</span>
+          <span className="hover:text-zinc-300 cursor-pointer">Market</span>
+          <span className="hover:text-zinc-300 cursor-pointer">Stop</span>
+        </div>
+
+        {/* Price Input */}
+        <div className="space-y-1">
+          <div className="flex justify-between text-xs text-zinc-500">
+            <span>Price</span>
+            <span>USDC</span>
+          </div>
+          <div className="relative">
+            <input
               type="number"
               value={price}
               onChange={(e) => setPrice(e.target.value)}
-              className="bg-zinc-900 border-zinc-800 h-11 text-zinc-100 font-mono text-lg focus-visible:ring-zinc-700"
+              className="w-full bg-[#2a2b36] border border-transparent focus:border-zinc-600 rounded px-3 py-2 text-right font-mono text-white outline-none"
               placeholder="0.00"
-              required
             />
           </div>
+        </div>
 
-          <div className="space-y-2">
-            <div className="flex justify-between items-center">
-              <Label className="text-[10px] text-zinc-500 font-bold uppercase">Size</Label>
-              <span className="text-[10px] text-zinc-600 font-bold">BAD</span>
-            </div>
-            <Input
+        {/* Size Input */}
+        <div className="space-y-1">
+          <div className="flex justify-between text-xs text-zinc-500">
+            <span>Size</span>
+            <span>BAD</span>
+          </div>
+          <div className="relative">
+            <input
               type="number"
               value={quantity}
               onChange={(e) => setQuantity(e.target.value)}
-              className="bg-zinc-900 border-zinc-800 h-11 text-zinc-100 font-mono text-lg focus-visible:ring-zinc-700"
-              placeholder="0.0"
-              required
+              className="w-full bg-[#2a2b36] border border-transparent focus:border-zinc-600 rounded px-3 py-2 text-right font-mono text-white outline-none"
+              placeholder="0.00"
             />
-          </div>
-
-          <div className="pt-2">
-            <div className="flex justify-between text-[10px] text-zinc-500 font-bold mb-4 px-1">
-              <span>ESTIMATED TOTAL</span>
-              <span className="text-zinc-300 font-mono">{total} USDT</span>
+            <div className="absolute left-3 top-2 text-zinc-600 text-xs font-mono">
+              {/* Optional Decorator */}
             </div>
-            <Button
-              type="submit"
-              className={`w-full h-14 font-black text-lg shadow-lg transition-all active:scale-[0.98] ${
-                side === "Buy" 
-                ? "bg-emerald-600 hover:bg-emerald-500 text-white" 
-                : "bg-rose-600 hover:bg-rose-500 text-white"
-              }`}
-            >
-              {side === "Buy" ? "BUY BAD" : "SELL BAD"}
-            </Button>
           </div>
-        </form>
-      </CardContent>
-    </Card>
+        </div>
+
+        {/* Slider */}
+        <div className="py-2">
+          <input
+            type="range"
+            min="0"
+            max="100"
+            value={percent}
+            onChange={(e) => setPercent(Number(e.target.value))}
+            className="w-full h-1 bg-zinc-700 rounded-lg appearance-none cursor-pointer accent-[#26E8A6]"
+          />
+          <div className="flex justify-between text-[10px] text-zinc-500 mt-1 font-mono">
+            <span>0%</span>
+            <span>25%</span>
+            <span>50%</span>
+            <span>75%</span>
+            <span>100%</span>
+          </div>
+        </div>
+
+        {/* Info Rows */}
+        <div className="space-y-1 text-xs">
+          <div className="flex justify-between text-zinc-500">
+            <span>Order Value</span>
+            <span className="text-zinc-300 font-mono">
+              {(parseFloat(price || "0") * parseFloat(quantity || "0")).toFixed(
+                2,
+              )}{" "}
+              USDC
+            </span>
+          </div>
+        </div>
+
+        <button
+          type="submit"
+          className={`w-full py-3 rounded-lg font-bold text-lg mt-4 shadow-lg ${
+            side === "Buy"
+              ? "bg-[#26E8A6] hover:bg-[#20c990] text-black shadow-[#26E8A6]/20"
+              : "bg-[#ff5353] hover:bg-[#e04848] text-white shadow-[#ff5353]/20"
+          }`}
+        >
+          {side} BAD
+        </button>
+      </form>
+    </div>
   );
 }

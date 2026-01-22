@@ -6,13 +6,15 @@ import OrderBook from "@/components/OrderBook";
 import TradeHistory from "@/components/TradeHistory";
 import PriceChart from "@/components/PriceChart";
 import { OrderBook as OrderBookType, Trade } from "@/types";
-import { Badge } from "@/components/ui/badge";
-import { Separator } from "@/components/ui/separator";
-import { Activity, Zap, ShieldCheck } from "lucide-react";
+import { Settings, ChevronDown, CheckCircle2 } from "lucide-react";
 
 export default function Home() {
-  const [orderBook, setOrderBook] = useState<OrderBookType>({ bids: {}, asks: {} });
+  const [orderBook, setOrderBook] = useState<OrderBookType>({
+    bids: {},
+    asks: {},
+  });
   const [trades, setTrades] = useState<Trade[]>([]);
+  const [activeTab, setActiveTab] = useState<"book" | "trades">("book");
 
   useEffect(() => {
     const fetchData = async () => {
@@ -35,100 +37,147 @@ export default function Home() {
     return () => clearInterval(interval);
   }, []);
 
-  const chartTrades = [...trades].reverse().map(t => ({
+  const chartTrades = [...trades].reverse().map((t) => ({
     price: t.price,
-    timestamp: Number(t.timestamp)
+    timestamp: Number(t.timestamp),
   }));
 
   return (
-    <main className="min-h-screen bg-black text-zinc-200 font-sans selection:bg-emerald-500/30">
-      {/* Navigation Bar */}
-      <nav className="h-14 border-b border-zinc-900 bg-zinc-950/50 backdrop-blur-md sticky top-0 z-50 px-6 flex items-center justify-between">
-        <div className="flex items-center gap-8">
+    <main className="h-screen bg-[#0b0c10] text-[#c5c6cc] font-sans flex flex-col overflow-hidden selection:bg-[#26E8A6]/30">
+      {/* Header */}
+      <nav className="h-12 border-b border-white/5 bg-[#13141b] flex items-center justify-between px-4 shrink-0">
+        <div className="flex items-center gap-6">
           <div className="flex items-center gap-2">
-            <div className="w-8 h-8 bg-gradient-to-br from-rose-500 to-rose-700 rounded flex items-center justify-center shadow-lg shadow-rose-900/20">
-              <Zap className="w-5 h-5 text-white fill-white" />
+            <div className="w-6 h-6 bg-[#26E8A6] rounded-full flex items-center justify-center">
+              <span className="text-black font-black text-xs">H</span>
             </div>
-            <span className="text-xl font-black text-white tracking-tighter">
-              BAD<span className="text-zinc-500">DEX</span>
+            <span className="font-bold text-white tracking-tight">
+              Hyperliquid
             </span>
           </div>
-          <Separator orientation="vertical" className="h-6 bg-zinc-800" />
-          <div className="flex items-center gap-6">
-            <div className="flex flex-col">
-              <span className="text-[10px] text-zinc-500 font-bold uppercase leading-none mb-1">Pair</span>
-              <span className="text-sm font-bold text-white leading-none">BAD / USDT</span>
+
+          <div className="h-6 w-px bg-white/10" />
+
+          <div className="flex items-center gap-4 text-xs">
+            <div className="flex items-center gap-1 text-white font-bold cursor-pointer hover:bg-white/5 px-2 py-1 rounded">
+              BAD/USDC{" "}
+              <span className="bg-[#26E8A6] text-black text-[9px] px-1 rounded ml-1">
+                Spot
+              </span>
+              <ChevronDown className="w-3 h-3 text-zinc-500" />
             </div>
             <div className="flex flex-col">
-              <span className="text-[10px] text-zinc-500 font-bold uppercase leading-none mb-1">Last Price</span>
-              <span className="text-sm font-bold text-emerald-500 leading-none">100.42</span>
+              <span className="text-[10px] text-zinc-500">Price</span>
+              <span className="text-[#26E8A6] font-mono">21.430</span>
+            </div>
+            <div className="flex flex-col">
+              <span className="text-[10px] text-zinc-500">24H Change</span>
+              <span className="text-[#ff5353] font-mono">-0.252 / -1.16%</span>
+            </div>
+            <div className="flex flex-col">
+              <span className="text-[10px] text-zinc-500">24H Volume</span>
+              <span className="text-zinc-300 font-mono">
+                34,078,121.47 USDC
+              </span>
             </div>
           </div>
         </div>
+
         <div className="flex items-center gap-4">
-          <Badge variant="outline" className="border-emerald-900/50 text-emerald-500 bg-emerald-500/5 px-2 py-1 flex gap-1.5">
-            <Activity className="w-3 h-3" />
-            SYSTEM ONLINE
-          </Badge>
-          <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-zinc-900 border border-zinc-800">
-            <ShieldCheck className="w-4 h-4 text-zinc-500" />
-            <span className="text-xs font-bold text-zinc-400">RUST ENGINE 1.92</span>
-          </div>
+          <button className="text-xs bg-[#26E8A6] text-black font-bold px-4 py-1.5 rounded hover:bg-[#20c990] transition-colors">
+            Connect Wallet
+          </button>
+          <Settings className="w-4 h-4 text-zinc-500 cursor-pointer hover:text-white" />
         </div>
       </nav>
 
-      {/* Dashboard Grid */}
-      <div className="p-4 grid grid-cols-1 xl:grid-cols-12 gap-4 max-w-[1800px] mx-auto">
-        
-        {/* Left Column: Order Entry (25%) */}
-        <div className="xl:col-span-3 space-y-4">
-          <OrderEntry />
-          <div className="bg-zinc-950 p-4 rounded-lg border border-zinc-900 space-y-3">
-             <h3 className="text-[10px] font-black text-zinc-500 uppercase tracking-widest">Matching Engine Stats</h3>
-             <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-1">
-                   <span className="text-[9px] text-zinc-600 block uppercase">Matching Speed</span>
-                   <span className="text-xs font-mono text-zinc-300">{"< 10ms"}</span>
-                </div>
-                <div className="space-y-1">
-                   <span className="text-[9px] text-zinc-600 block uppercase">Priority Logic</span>
-                   <span className="text-xs font-mono text-zinc-300">Price-Time</span>
-                </div>
-             </div>
-             <p className="text-[9px] text-zinc-700 leading-relaxed italic">
-                Memory-safe, high-concurrency order processing implemented in Rust. Optimized for high-frequency algorithmic trading.
-             </p>
-          </div>
-        </div>
-
-        {/* Middle Column: Chart & Order Book (50%) */}
-        <div className="xl:col-span-6 space-y-4">
+      <div className="flex-1 flex min-h-0">
+        {/* Main Content (Left) */}
+        <div className="flex-1 flex flex-col min-w-0">
           {/* Chart Section */}
-          <div className="bg-zinc-950 rounded-lg border border-zinc-900 p-4 shadow-2xl relative overflow-hidden group">
-            <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-emerald-500 to-rose-500 opacity-20" />
-            <div className="flex justify-between items-center mb-4">
-              <div className="flex gap-4 items-center">
-                <h2 className="text-xs font-black text-zinc-400 uppercase tracking-widest">BAD/USDT Live Chart</h2>
-                <Badge className="bg-zinc-900 text-zinc-500 border-none pointer-events-none">1m</Badge>
+          <div className="flex-1 bg-[#13141b] relative flex flex-col min-h-0">
+            {/* Internal Toolbar */}
+            <div className="h-10 border-b border-white/5 flex items-center px-4 gap-4 text-xs font-bold text-zinc-500">
+              <div className="flex gap-1">
+                <span className="hover:text-white cursor-pointer px-1">1m</span>
+                <span className="text-white bg-white/10 px-1 rounded cursor-pointer">
+                  5m
+                </span>
+                <span className="hover:text-white cursor-pointer px-1">1h</span>
+                <span className="hover:text-white cursor-pointer px-1">1D</span>
               </div>
-              <div className="flex gap-2">
-                <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+              <div className="w-px h-4 bg-white/10" />
+              <span className="hover:text-white cursor-pointer">
+                Indicators
+              </span>
+            </div>
+
+            {/* Chart Container */}
+            <div className="flex-1 min-h-0 w-full">
+              <PriceChart trades={chartTrades} />
+            </div>
+          </div>
+
+          {/* Bottom Panel (Balances/Orders) */}
+          <div className="h-[250px] border-t border-white/5 bg-[#13141b] flex flex-col">
+            <div className="h-9 border-b border-white/5 flex items-center px-4 gap-6 text-xs font-bold text-zinc-500">
+              <span className="text-white border-b-2 border-[#26E8A6] h-full flex items-center px-1 cursor-pointer">
+                Positions
+              </span>
+              <span className="hover:text-white cursor-pointer h-full flex items-center px-1">
+                Open Orders (0)
+              </span>
+              <span className="hover:text-white cursor-pointer h-full flex items-center px-1">
+                Twap
+              </span>
+              <span className="hover:text-white cursor-pointer h-full flex items-center px-1">
+                Trade History
+              </span>
+              <span className="hover:text-white cursor-pointer h-full flex items-center px-1">
+                Funding History
+              </span>
+            </div>
+            <div className="flex-1 flex items-center justify-center text-zinc-600 text-xs">
+              <div className="flex flex-col items-center gap-2">
+                <CheckCircle2 className="w-8 h-8 opacity-20" />
+                <span>No open positions</span>
               </div>
             </div>
-            <PriceChart trades={chartTrades} />
-          </div>
-
-          {/* Order Book Section */}
-          <div className="h-[400px]">
-            <OrderBook data={orderBook} />
           </div>
         </div>
 
-        {/* Right Column: History (25%) */}
-        <div className="xl:col-span-3 h-[852px]">
-          <TradeHistory trades={trades} />
-        </div>
+        {/* Right Sidebar (OrderBook / Trades / Entry) */}
+        <div className="w-[320px] bg-[#13141b] border-l border-white/5 flex flex-col z-10 shrink-0">
+          {/* Tabs */}
+          <div className="flex h-10 border-b border-white/5">
+            <button
+              onClick={() => setActiveTab("book")}
+              className={`flex-1 text-xs font-bold uppercase transition-colors ${activeTab === "book" ? "text-white border-b-2 border-[#26E8A6]" : "text-zinc-500 hover:text-zinc-300"}`}
+            >
+              Order Book
+            </button>
+            <button
+              onClick={() => setActiveTab("trades")}
+              className={`flex-1 text-xs font-bold uppercase transition-colors ${activeTab === "trades" ? "text-white border-b-2 border-[#26E8A6]" : "text-zinc-500 hover:text-zinc-300"}`}
+            >
+              Recent Trades
+            </button>
+          </div>
 
+          {/* Tab Content */}
+          <div className="flex-1 min-h-0">
+            {activeTab === "book" ? (
+              <OrderBook data={orderBook} />
+            ) : (
+              <TradeHistory trades={trades} />
+            )}
+          </div>
+
+          {/* Order Entry (Fixed at bottom of sidebar) */}
+          <div className="border-t border-white/5">
+            <OrderEntry />
+          </div>
+        </div>
       </div>
     </main>
   );
