@@ -17,6 +17,15 @@ export default function OrderBook({ data }: Props) {
     .sort((a, b) => parseFloat(b[0]) - parseFloat(a[0])) // Descending (High -> Low)
     .slice(0, 15);
 
+  // Calculate sizes and find max size for bars
+  const askSizes = sortedAsks.map(([, orders]) =>
+    orders.reduce((acc, o) => acc + o.quantity, 0),
+  );
+  const bidSizes = sortedBids.map(([, orders]) =>
+    orders.reduce((acc, o) => acc + o.quantity, 0),
+  );
+  const maxSize = Math.max(...askSizes, ...bidSizes, 1);
+
   const bestAsk = parseFloat(sortedAsks[sortedAsks.length - 1]?.[0] || "0");
   const bestBid = parseFloat(sortedBids[0]?.[0] || "0");
   const spread = bestAsk && bestBid ? (bestAsk - bestBid).toFixed(3) : "0.000";
@@ -56,18 +65,35 @@ export default function OrderBook({ data }: Props) {
       {/* Asks (Sell) - Rendered from Top (High) to Bottom (Low/Best) */}
       <div className="flex-1 overflow-hidden relative">
         <div className="absolute inset-0 flex flex-col justify-end">
-          {sortedAsks.map(([price, orders]) => {
-            const size = orders.reduce((acc, o) => acc + o.quantity, 0);
+          {sortedAsks.map(([price], index) => {
+            const size = askSizes[index];
+            // Accumulate from bottom (best ask) up to current index
+            // sortedAsks is High -> Low. Best is at the end.
+            // So we sum from index to end.
+            const total = askSizes
+              .slice(index)
+              .reduce((acc, val) => acc + val, 0);
+
+            const barWidth = (size / maxSize) * 100;
+
             return (
               <div
                 key={price}
-                className="grid grid-cols-3 px-2 py-0.5 hover:bg-white/5 cursor-pointer"
+                className="grid grid-cols-3 px-2 py-0.5 hover:bg-white/5 cursor-pointer relative"
               >
-                <span className="text-[#ff5353]">{price}</span>
-                <span className="text-right text-zinc-300">
+                {/* Depth Bar */}
+                <div
+                  className="absolute top-0 bottom-0 right-0 bg-[#ff5353]/15 transition-all duration-200"
+                  style={{ width: `${barWidth}%` }}
+                />
+
+                <span className="text-[#ff5353] z-10 relative">{price}</span>
+                <span className="text-right text-zinc-300 z-10 relative">
                   {size.toLocaleString()}
                 </span>
-                <span className="text-right text-zinc-500">-</span>
+                <span className="text-right text-zinc-500 z-10 relative">
+                  {total.toLocaleString()}
+                </span>
               </div>
             );
           })}
@@ -90,18 +116,35 @@ export default function OrderBook({ data }: Props) {
 
       {/* Bids (Buy) - Rendered from Top (High/Best) to Bottom (Low) */}
       <div className="flex-1 overflow-hidden">
-        {sortedBids.map(([price, orders]) => {
-          const size = orders.reduce((acc, o) => acc + o.quantity, 0);
+        {sortedBids.map(([price], index) => {
+          const size = bidSizes[index];
+          // Accumulate from top (best bid) down to current index
+          // sortedBids is High -> Low. Best is at start (index 0).
+          // So we sum from 0 to index + 1
+          const total = bidSizes
+            .slice(0, index + 1)
+            .reduce((acc, val) => acc + val, 0);
+
+          const barWidth = (size / maxSize) * 100;
+
           return (
             <div
               key={price}
-              className="grid grid-cols-3 px-2 py-0.5 hover:bg-white/5 cursor-pointer"
+              className="grid grid-cols-3 px-2 py-0.5 hover:bg-white/5 cursor-pointer relative"
             >
-              <span className="text-[#26E8A6]">{price}</span>
-              <span className="text-right text-zinc-300">
+              {/* Depth Bar */}
+              <div
+                className="absolute top-0 bottom-0 right-0 bg-[#26E8A6]/15 transition-all duration-200"
+                style={{ width: `${barWidth}%` }}
+              />
+
+              <span className="text-[#26E8A6] z-10 relative">{price}</span>
+              <span className="text-right text-zinc-300 z-10 relative">
                 {size.toLocaleString()}
               </span>
-              <span className="text-right text-zinc-500">-</span>
+              <span className="text-right text-zinc-500 z-10 relative">
+                {total.toLocaleString()}
+              </span>
             </div>
           );
         })}

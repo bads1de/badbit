@@ -15,6 +15,13 @@ export default function Home() {
   });
   const [trades, setTrades] = useState<Trade[]>([]);
   const [activeTab, setActiveTab] = useState<"book" | "trades">("book");
+  const [marketStats, setMarketStats] = useState({
+    currentPrice: 0,
+    priceChange: 0,
+    priceChangePercent: 0,
+    volume24h: 0,
+    startPrice: 0,
+  });
 
   useEffect(() => {
     const fetchData = async () => {
@@ -23,10 +30,41 @@ export default function Home() {
           fetch("http://localhost:8000/orderbook"),
           fetch("http://localhost:8000/trades"),
         ]);
+
         if (obRes.ok) setOrderBook(await obRes.json());
+
         if (tradesRes.ok) {
           const newTrades = await tradesRes.json();
-          setTrades([...newTrades].reverse());
+          const sortedTrades = [...newTrades].reverse();
+          setTrades(sortedTrades);
+
+          // Calculate Market Stats
+          const currentPrice =
+            sortedTrades.length > 0 ? sortedTrades[0].price : 0;
+          const now = Date.now();
+          const oneDayAgo = now - 24 * 60 * 60 * 1000;
+          const recentTrades = sortedTrades.filter(
+            (t: Trade) => t.timestamp > oneDayAgo,
+          );
+          const startPrice =
+            recentTrades.length > 0
+              ? recentTrades[recentTrades.length - 1].price
+              : currentPrice;
+          const priceChange = currentPrice - startPrice;
+          const priceChangePercent =
+            startPrice > 0 ? (priceChange / startPrice) * 100 : 0;
+          const volume24h = recentTrades.reduce(
+            (acc: number, t: Trade) => acc + t.price * t.quantity,
+            0,
+          );
+
+          setMarketStats({
+            currentPrice,
+            priceChange,
+            priceChangePercent,
+            volume24h,
+            startPrice,
+          });
         }
       } catch (err) {
         console.error("Sync error:", err);
@@ -39,8 +77,17 @@ export default function Home() {
 
   const chartTrades = [...trades].reverse().map((t) => ({
     price: t.price,
+    volume: t.quantity,
     timestamp: Number(t.timestamp),
   }));
+
+  const {
+    currentPrice,
+    priceChange,
+    priceChangePercent,
+    volume24h,
+    startPrice,
+  } = marketStats;
 
   return (
     <main className="h-screen bg-[#0b0c10] text-[#c5c6cc] font-sans flex flex-col overflow-hidden selection:bg-[#26E8A6]/30">
@@ -49,11 +96,9 @@ export default function Home() {
         <div className="flex items-center gap-6">
           <div className="flex items-center gap-2">
             <div className="w-6 h-6 bg-[#26E8A6] rounded-full flex items-center justify-center">
-              <span className="text-black font-black text-xs">H</span>
+              <span className="text-black font-black text-xs">B</span>
             </div>
-            <span className="font-bold text-white tracking-tight">
-              Hyperliquid
-            </span>
+            <span className="font-bold text-white tracking-tight">badbit</span>
           </div>
 
           <div className="h-6 w-px bg-white/10" />
@@ -68,16 +113,24 @@ export default function Home() {
             </div>
             <div className="flex flex-col">
               <span className="text-[10px] text-zinc-500">Price</span>
-              <span className="text-[#26E8A6] font-mono">21.430</span>
+              <span
+                className={`font-mono text-sm ${currentPrice >= startPrice ? "text-[#26E8A6]" : "text-[#ff5353]"}`}
+              >
+                {currentPrice.toFixed(2)}
+              </span>
             </div>
             <div className="flex flex-col">
               <span className="text-[10px] text-zinc-500">24H Change</span>
-              <span className="text-[#ff5353] font-mono">-0.252 / -1.16%</span>
+              <span
+                className={`font-mono ${priceChange >= 0 ? "text-[#26E8A6]" : "text-[#ff5353]"}`}
+              >
+                {priceChange.toFixed(2)} / {priceChangePercent.toFixed(2)}%
+              </span>
             </div>
             <div className="flex flex-col">
               <span className="text-[10px] text-zinc-500">24H Volume</span>
               <span className="text-zinc-300 font-mono">
-                34,078,121.47 USDC
+                {volume24h.toLocaleString()} USDC
               </span>
             </div>
           </div>
@@ -119,7 +172,7 @@ export default function Home() {
           </div>
 
           {/* Bottom Panel (Balances/Orders) */}
-          <div className="h-[250px] border-t border-white/5 bg-[#13141b] flex flex-col">
+          <div className="h-62.5 border-t border-white/5 bg-[#13141b] flex flex-col">
             <div className="h-9 border-b border-white/5 flex items-center px-4 gap-6 text-xs font-bold text-zinc-500">
               <span className="text-white border-b-2 border-[#26E8A6] h-full flex items-center px-1 cursor-pointer">
                 Positions
