@@ -246,3 +246,43 @@ pub async fn save_trade(
 
     Ok(())
 }
+
+/// DBタスクへの非同期メッセージ
+#[derive(Debug)]
+pub enum DbMessage {
+    /// 残高が変化したことを通知
+    UpdateBalance {
+        user_id: Uuid,
+        asset: String,
+        available: Decimal,
+        locked: Decimal,
+    },
+    /// 約定履歴を保存
+    SaveTrade {
+        maker_order_id: u64,
+        taker_order_id: u64,
+        price: Decimal,
+        quantity: u64,
+        timestamp: u128,
+        user_id: Option<Uuid>, // 約定したユーザー（Maker/Taker両方送る）
+    }
+}
+
+pub async fn run_db_writer(mut rx: tokio::sync::mpsc::Receiver<DbMessage>, pool: DbPool) {
+    // メッセージが来るたびにDBに書き込む
+    // エラーが出てもログに出すだけでクラッシュさせない
+    while let Some(msg) = rx.recv().await {
+        match msg {
+            DbMessage::UpdateBalance { user_id, asset, available, locked } => {
+                if let Err(e) = update_balance(&pool, user_id, &asset, available, locked).await {
+                    eprintln!("DB Error (UpdateBalance): {}", e);
+                }
+            }
+            DbMessage::SaveTrade { maker_order_id, taker_order_id, price, quantity, timestamp, user_id } => {
+                if let Err(e) = save_trade(&pool, maker_order_id, taker_order_id, price, quantity, timestamp, user_id).await {
+                    eprintln!("DB Error (SaveTrade): {}", e);
+                }
+            }
+        }
+    }
+}

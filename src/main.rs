@@ -1,5 +1,5 @@
 // =============================================================================
-// Hyperliquid Bot - 取引マッチングエンジン
+// badbit - 取引マッチングエンジン
 // =============================================================================
 //
 // このプログラムは、仮想通貨取引所のオーダーブック（板）とマッチングエンジンを
@@ -11,24 +11,22 @@
 // │  (axum)        │◀────│   (mpsc)       │◀────│  (OrderBook)   │
 // └─────────────────┘     └─────────────────┘     └─────────────────┘
 //
-// - Web API層: HTTPリクエストを受け付ける（複数の接続を同時に処理）
-// - チャネル: API層とエンジン層の間のメッセージパッシング
-// - エンジン層: 注文の処理とマッチングを行う（シングルスレッドで安全に動作）
-//
-// 【なぜこの設計なのか？】
-// 取引所では「同じデータに複数のリクエストが同時にアクセスする」問題があります。
-// 例: AさんとBさんが同時に同じ価格に注文を出す → データの整合性が壊れる可能性
-//
-// 解決策は2つ:
-// 1. Mutex（排他ロック）を使う → シンプルだが、ロック待ちで遅くなる
-// 2. Actorパターンを使う → データを1つのタスクだけが触る、他はメッセージを送る
-//
-// このプログラムは2のActorパターンを採用しています。
-// 理由: 高頻度取引ではMutexのロック競合がボトルネックになりやすいため
+// Refactored into modules:
+// - models: データ型 (Order, Trade, Side)
+// - db: データベース接続 & 永続化アクター
+// - account: 残高管理ロジック
+// - orderbook: 板管理ロジック
+// - engine: マッチングエンジンアクター
+// - simulator: 市場シミュレータ
 // =============================================================================
 
 // --- 内部モジュール ---
-mod db; // データベースモジュール
+mod models;
+mod db;
+mod account;
+mod orderbook;
+mod engine;
+mod simulator;
 
 // --- 外部クレート（ライブラリ）のインポート ---
 use axum::{
@@ -36,481 +34,26 @@ use axum::{
     routing::{get, post},     // HTTPメソッドに応じたルーティング
     Json, Router,             // JSONレスポンスとルーター
 };
-use rand::Rng;                // 乱数生成（シミュレータで使用）
-use rust_decimal::Decimal;    // 固定小数点数（お金の計算に必須）
-                              // 理由: f64は浮動小数点の誤差がある (0.1 + 0.2 != 0.3)
-                              // Decimalは誤差なく正確に10進数を扱える
-use rust_decimal_macros::dec; // Decimalリテラルを書くためのマクロ (例: dec!(100.5))
-use serde::{Deserialize, Serialize}; // JSON変換のためのシリアライズ/デシリアライズ
-use std::collections::{BTreeMap, HashMap, VecDeque}; // ソート済みマップ、ハッシュマップ、キュー
+use rust_decimal::Decimal;    // 固定小数点数
+use serde::{Deserialize, Serialize}; 
 use std::sync::Arc;           // スレッド間で安全に共有できるスマートポインタ
 use std::time::SystemTime;    // UNIXタイムスタンプ取得用
 use tokio::sync::{mpsc, oneshot}; // 非同期チャネル
-                                   // mpsc: 複数送信者→1受信者（Multi-Producer Single-Consumer）
-                                   // oneshot: 1回限りの返信用チャネル
 use tower_http::cors::CorsLayer;  // CORSヘッダーを追加するミドルウェア
 use uuid::Uuid;               // ユニークID生成
 
-// =============================================================================
-// データ構造の定義
-// =============================================================================
-
-/// 注文の売買方向を表す列挙型
-/// 
-/// - Buy: 買い注文（指定価格以下の売り注文があれば約定、なければ板に追加）
-/// - Sell: 売り注文（指定価格以上の買い注文があれば約定、なければ板に追加）
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Side {
-    Buy,
-    Sell,
-}
-
-/// 1つの注文を表す構造体
-/// 
-/// # フィールド
-/// - id: 注文を一意に識別するID
-/// - price: 希望価格（この価格で取引したい）
-/// - quantity: 数量（いくつ欲しいか/売りたいか）
-/// - side: 買いか売りか
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Order {
-    pub id: u64,
-    #[serde(with = "rust_decimal::serde::str")] // JSONでは文字列として扱う（精度を保つため）
-    pub price: Decimal,
-    pub quantity: u64,
-    pub side: Side,
-    // 注文の所有者（シミュレータの場合はNone）
-    pub user_id: Option<Uuid>, 
-}
-
-/// 約定（マッチングが成立した取引）を表す構造体
-/// 
-/// 取引が成立すると、買い手と売り手の注文がマッチして約定が生成されます。
-/// 
-/// # フィールド
-/// - maker_id: 先に板に注文を出していた側のID（流動性を提供した側）
-/// - taker_id: 後から来て即座に約定した側のID（流動性を消費した側）
-/// - price: 約定価格
-/// - quantity: 約定数量
-/// - timestamp: 約定時刻（ミリ秒単位のUNIXタイムスタンプ）
-#[derive(Debug, Serialize, Clone)]
-pub struct Trade {
-    pub maker_id: u64,
-    pub taker_id: u64,
-    #[serde(with = "rust_decimal::serde::str")] // JSONでは文字列として扱う
-    pub price: Decimal,
-    pub quantity: u64,
-    pub timestamp: u128, // u128を使う理由: ミリ秒単位だとu64では2500万年後に溢れる
-                          // u128なら事実上無限に使える
-}
-
-/// オーダーブック（板）を表す構造体
-/// 
-/// 取引所の核心部分。すべての未約定注文を価格ごとに管理します。
-/// 
-/// # フィールド
-/// - bids: 買い注文一覧（価格→注文キューのマップ）
-/// - asks: 売り注文一覧（価格→注文キューのマップ）
-/// 
-// =============================================================================
-// 残高管理モジュール (In-Memory)
-// =============================================================================
-
-/// ユーザーごとの残高状態
-#[derive(Debug, Clone, Default)]
-struct UserBalance {
-    available: Decimal,
-    locked: Decimal,
-}
-
-/// 全ユーザーの残高を管理する
-/// 
-/// エンジンアクター内で保持され、注文時に高速に残高チェックを行う
-#[derive(Debug, Clone, Default)]
-pub struct AccountManager {
-    // ユーザーID -> { 資産名 -> 残高 }
-    balances: HashMap<Uuid, HashMap<String, UserBalance>>,
-}
-
-impl AccountManager {
-    pub fn new() -> Self {
-        Self {
-            balances: HashMap::new(),
-        }
-    }
-
-    /// 初期残高をロードする（起動時用）
-    pub fn load_balance(&mut self, user_id: Uuid, asset: &str, available: Decimal, locked: Decimal) {
-        let user_balances = self.balances.entry(user_id).or_default();
-        user_balances.insert(asset.to_string(), UserBalance { available, locked });
-    }
-
-    /// 現在の残高を取得
-    pub fn get_balance(&self, user_id: &Uuid, asset: &str) -> (Decimal, Decimal) {
-        if let Some(user_balances) = self.balances.get(user_id) {
-            if let Some(balance) = user_balances.get(asset) {
-                return (balance.available, balance.locked);
-            }
-        }
-        (Decimal::ZERO, Decimal::ZERO)
-    }
-
-    /// 注文前の残高チェックとロック（仮押さえ）
-    /// 
-    /// - 買い注文: (価格 * 数量) 分のUSDCをロック
-    /// - 売り注文: 数量分のBADをロック
-    pub fn try_lock_balance(&mut self, user_id: &Uuid, side: Side, price: Decimal, quantity: u64) -> Result<(), &'static str> {
-        // ロックする量を計算
-        let (asset, amount_to_lock) = match side {
-            Side::Buy => ("USDC", price * Decimal::from(quantity)),
-            Side::Sell => ("BAD", Decimal::from(quantity)),
-        };
-
-        let user_balances = self.balances.entry(*user_id).or_default();
-        let balance = user_balances.entry(asset.to_string()).or_default();
-
-        if balance.available < amount_to_lock {
-            return Err("残高不足"); // Simplified error
-        }
-
-        // 残高移動: Available -> Locked
-        balance.available -= amount_to_lock;
-        balance.locked += amount_to_lock;
-
-        Ok(())
-    }
-
-    /// 約定時の残高移動（一番複雑な部分！）
-    /// 
-    /// 1. 自分のLockedを減らす（注文時にロックした分）
-    /// 2. 相手から受け取る資産をAvailableに増やす
-    pub fn on_trade_match(&mut self, user_id: &Uuid, side: Side, price: Decimal, quantity: u64) {
-        let qty_dec = Decimal::from(quantity);
-        let trade_value = price * qty_dec;
-
-        let user_balances = self.balances.entry(*user_id).or_default();
-
-        match side {
-            Side::Buy => {
-                // 買い手の場合:
-                // 1. ロックしていたUSDCを消費（支払う）
-                let usdc = user_balances.entry("USDC".to_string()).or_default();
-                usdc.locked -= trade_value; // ※注意: ロックした額と一致するはずだが厳密には指値価格との差分返金が必要（今回は省略）
-                
-                // 2. BADを入手（受け取る）
-                let bad = user_balances.entry("BAD".to_string()).or_default();
-                bad.available += qty_dec;
-            }
-            Side::Sell => {
-                // 売り手の場合:
-                // 1. ロックしていたBADを消費（渡す）
-                let bad = user_balances.entry("BAD".to_string()).or_default();
-                bad.locked -= qty_dec;
-
-                // 2. USDCを入手（受け取る）
-                let usdc = user_balances.entry("USDC".to_string()).or_default();
-                usdc.available += trade_value;
-            }
-        }
-    }
-}
-
-// =============================================================================
-// DB Writer (永続化) 用のメッセージ定義
-// =============================================================================
-
-/// DBタスクへの非同期メッセージ
-enum DbMessage {
-    /// 残高が変化したことを通知
-    UpdateBalance {
-        user_id: Uuid,
-        asset: String,
-        available: Decimal,
-        locked: Decimal,
-    },
-    /// 約定履歴を保存
-    SaveTrade {
-        maker_order_id: u64,
-        taker_order_id: u64,
-        price: Decimal,
-        quantity: u64,
-        timestamp: u128,
-        user_id: Option<Uuid>, // 約定したユーザー（Maker/Taker両方送る）
-    }
-}
-
-/// OrderBook（板）を表す構造体
-/// 
-/// 取引所の核心部分。すべての未約定注文を価格ごとに管理します。
-/// 
-/// # フィールド
-/// - bids: 買い注文一覧（価格→注文キューのマップ）
-/// - asks: 売り注文一覧（価格→注文キューのマップ）
-/// 
-/// # なぜBTreeMapを使うのか？
-/// - 価格順にソートされた状態を維持できる
-/// - 最高買値/最安売値を高速に取得できる（イテレータでO(1)）
-/// - 挿入・削除はO(log n)だが、HashMapだと毎回ソートが必要になり遅い
-/// 
-/// # なぜVecDequeを使うのか？
-/// - 同じ価格に複数の注文が存在できる
-/// - 先入先出（FIFO）で公平に処理するため、キュー構造が適切
-/// - 先頭からの取り出しがO(1)（Vecだと先頭削除はO(n)）
-#[derive(Debug, Clone)]
-pub struct OrderBook {
-    // Decimalは既にOrdトレイトを実装しているので、OrderedFloatラッパーは不要！
-    // これはDecimalを使う大きなメリットの一つ
-    pub bids: BTreeMap<Decimal, VecDeque<Order>>, // 買い板
-    pub asks: BTreeMap<Decimal, VecDeque<Order>>, // 売り板
-}
-
-/// OrderBook用のカスタムシリアライズ実装
-/// 
-/// # なぜ手動実装するのか？
-/// - Decimalをそのままキーにするとフロントエンドで扱いにくい
-/// - 価格を文字列キーとしてJSONに出力したい
-/// - 例: { "100.500": [...] } のようなJSON形式にする
-impl Serialize for OrderBook {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        use serde::ser::SerializeStruct;
-        
-        // 2つのフィールド（bids, asks）を持つ構造体としてシリアライズ
-        let mut state = serializer.serialize_struct("OrderBook", 2)?;
-
-        // bidsをシリアライズ: Decimalを文字列キーに変換
-        let bids: BTreeMap<String, &VecDeque<Order>> = self
-            .bids
-            .iter()
-            .map(|(k, v)| (k.to_string(), v)) // Decimalはto_string()で正確な文字列に
-            .collect();
-        state.serialize_field("bids", &bids)?;
-
-        // asksも同様に変換
-        let asks: BTreeMap<String, &VecDeque<Order>> = self
-            .asks
-            .iter()
-            .map(|(k, v)| (k.to_string(), v))
-            .collect();
-        state.serialize_field("asks", &asks)?;
-
-        state.end()
-    }
-}
-
-/// Defaultトレイトの実装
-/// 
-/// RustではDefault traitを実装することで:
-/// - OrderBook::default() で新しいインスタンスを作れる
-/// - 他の型との相互運用性が向上する（Option::unwrap_or_default()など）
-impl Default for OrderBook {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl OrderBook {
-    /// 新しい空のオーダーブックを作成
-    pub fn new() -> Self {
-        Self {
-            bids: BTreeMap::new(),
-            asks: BTreeMap::new(),
-        }
-    }
-
-    /// 注文を処理し、マッチングを行う
-    /// 
-    /// これが取引所の心臓部。注文が来たら:
-    /// 1. マッチ可能な相手注文を探す
-    /// 2. 見つかったら約定を生成
-    /// 3. 残りがあれば板に追加
-    /// 
-    /// # 引数
-    /// - taker_order: 新しく入ってきた注文（mutなのは数量を減らしていくため）
-    /// 
-    /// # 戻り値
-    /// - 生成された約定のリスト（マッチしなければ空のVec）
-    pub fn process_order(&mut self, mut taker_order: Order) -> Vec<Trade> {
-        let mut trades = Vec::new();
-        
-        // 現在時刻を取得（約定のタイムスタンプ用）
-        let now = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH) // 1970年1月1日からの経過時間
-            .unwrap() // SystemTimeがUNIX_EPOCHより前になることはないのでunwrapは安全
-            .as_millis(); // ミリ秒に変換
-
-        // Decimalはそのままキーとして使える（Ordトレイトを持つ）
-        let taker_price = taker_order.price;
-
-        match taker_order.side {
-            Side::Buy => {
-                // ========================================
-                // 買い注文の処理
-                // ========================================
-                // 買い手は「この価格以下で売りたい人」とマッチする
-                // つまり、売り板(asks)の安い順に見ていく
-                
-                // 注文数量がなくなるまでマッチングを続ける
-                while taker_order.quantity > 0 {
-                    // 最安の売り注文の価格を取得
-                    // asks.keys().next() で最小キー（最安値）を取得
-                    // BTreeMapは昇順なのでnext()で最小値が得られる
-                    let first_price = match self.asks.keys().next() {
-                        Some(&p) if p <= taker_price => p, // 買い希望価格以下なら取引可能
-                        _ => break, // マッチする売り注文がなければループ終了
-                    };
-
-                    // その価格にある注文一覧を取得
-                    // unwrap()は安全: 上でkeysから取得したキーなので必ず存在する
-                    let orders_at_price = self.asks.get_mut(&first_price).unwrap();
-                    
-                    // その価格帯の注文を順番に処理
-                    while taker_order.quantity > 0 && !orders_at_price.is_empty() {
-                        // キューの先頭（最も早く出された注文）を取り出す
-                        let mut maker_order = orders_at_price.pop_front().unwrap();
-                        
-                        // 約定数量 = 両者の数量の小さい方
-                        let match_quantity =
-                            std::cmp::min(taker_order.quantity, maker_order.quantity);
-
-                        // 約定を記録
-                        trades.push(Trade {
-                            maker_id: maker_order.id,
-                            taker_id: taker_order.id,
-                            price: first_price, // Decimalはそのまま使える
-                            quantity: match_quantity,
-                            timestamp: now,
-                        });
-
-                        // 各注文の残数量を更新
-                        taker_order.quantity -= match_quantity;
-                        maker_order.quantity -= match_quantity;
-
-                        // maker_orderに残りがあれば、キューの先頭に戻す
-                        // 理由: まだ約定していない分は次のテイカーに回す
-                        if maker_order.quantity > 0 {
-                            orders_at_price.push_front(maker_order);
-                        }
-                    }
-                    
-                    // この価格帯の注文がすべて約定したらエントリーを削除
-                    // 理由: 空のVecDequeを残すとメモリの無駄になる
-                    if orders_at_price.is_empty() {
-                        self.asks.remove(&first_price);
-                    }
-                }
-                
-                // テイカー注文に残りがあれば、買い板に追加
-                // これで「指値注文」として板に載る
-                if taker_order.quantity > 0 {
-                    self.bids
-                        .entry(taker_price)           // そのキーのエントリーを取得
-                        .or_default()                 // なければデフォルト値（空のVecDeque）を作成
-                        .push_back(taker_order);       // キューの末尾に追加
-                }
-            }
-            Side::Sell => {
-                // ========================================
-                // 売り注文の処理
-                // ========================================
-                // 売り手は「この価格以上で買いたい人」とマッチする
-                // つまり、買い板(bids)の高い順に見ていく
-                
-                while taker_order.quantity > 0 {
-                    // 最高買値を取得
-                    // next_back()を使う理由: BTreeMapは昇順なので、最大値は末尾にある
-                    let first_price = match self.bids.keys().next_back() {
-                        Some(&p) if p >= taker_price => p, // 売り希望価格以上なら取引可能
-                        _ => break,
-                    };
-
-                    let orders_at_price = self.bids.get_mut(&first_price).unwrap();
-                    while taker_order.quantity > 0 && !orders_at_price.is_empty() {
-                        let mut maker_order = orders_at_price.pop_front().unwrap();
-                        let match_quantity =
-                            std::cmp::min(taker_order.quantity, maker_order.quantity);
-
-                        trades.push(Trade {
-                            maker_id: maker_order.id,
-                            taker_id: taker_order.id,
-                            price: first_price, // Decimalはそのまま使える
-                            quantity: match_quantity,
-                            timestamp: now,
-                        });
-
-                        taker_order.quantity -= match_quantity;
-                        maker_order.quantity -= match_quantity;
-
-                        if maker_order.quantity > 0 {
-                            orders_at_price.push_front(maker_order);
-                        }
-                    }
-                    if orders_at_price.is_empty() {
-                        self.bids.remove(&first_price);
-                    }
-                }
-                
-                // 残りがあれば売り板に追加
-                if taker_order.quantity > 0 {
-                    self.asks
-                        .entry(taker_price)
-                        .or_default()                 // デフォルト値を使う（VecDequeは空のキュー）
-                        .push_back(taker_order);
-                }
-            }
-        }
-        trades
-    }
-}
-
-// =============================================================================
-// Actorパターンのメッセージ定義
-// =============================================================================
-// 
-// Actorパターンでは、データを持つ「アクター」にメッセージを送って操作を依頼します。
-// 直接データにアクセスするのではなく、「〇〇してください」というメッセージを送り、
-// アクターが自分のタイミングで処理して結果を返します。
-// 
-// これによりロックなしで安全な並行処理が実現できます。
-
-/// エンジン（アクター）に送るメッセージの種類を定義
-/// 
-/// 各バリアントは「依頼の種類」と「結果の返信先」を持ちます。
-/// respond_toフィールドがoneshot::Senderなのは:
-/// - 1つのリクエストに対して1つの応答だけが返るため
-/// - 送信後にチャネルは閉じられる（再利用不可）
-enum EngineMessage {
-    /// 新規注文を処理してください
-    PlaceOrder {
-        order: Order,                          // 処理してほしい注文
-        respond_to: oneshot::Sender<Vec<Trade>>, // 約定リストを返信する先
-    },
-    /// 現在のオーダーブックを見せてください
-    GetOrderBook {
-        respond_to: oneshot::Sender<OrderBook>,
-    },
-    /// 取引履歴を見せてください
-    GetTrades {
-        respond_to: oneshot::Sender<Vec<Trade>>,
-    },
-}
+// --- モジュールからのインポート ---
+use crate::models::{Order, Trade, Side};
+use crate::orderbook::OrderBook;
+use crate::account::AccountManager;
+use crate::engine::EngineMessage;
+use crate::db::DbMessage;
 
 // =============================================================================
 // Webサーバーの状態
 // =============================================================================
 
 /// APIハンドラーが持つ共有状態
-/// 
-/// # 重要な設計ポイント
-/// - OrderBookを直接持たない（Actorパターン）
-/// - 代わりにエンジンへのメッセージ送信チャネルだけを持つ
-/// 
-/// # なぜClone可能にするのか？
-/// - axumはハンドラーごとにStateのクローンを渡す
-/// - mpsc::SenderはClone可能で、複数の送信者が同じ受信者に送れる
-/// - これにより複数のHTTPリクエストが同時にエンジンにメッセージを送れる
 #[derive(Clone)]
 struct AppState {
     sender: mpsc::Sender<EngineMessage>,
@@ -521,27 +64,11 @@ struct AppState {
 // =============================================================================
 // APIハンドラー
 // =============================================================================
-// 
-// 各ハンドラーは同じパターンで動作します:
-// 1. oneshot チャネルを作成（返信を受け取るため）
-// 2. エンジンにメッセージを送信（返信先を含める）
-// 3. 結果が返ってくるのを待つ
-// 4. JSONで応答
 
 /// GET /orderbook - 現在の板情報を取得
 async fn get_orderbook(State(state): State<Arc<AppState>>) -> Json<OrderBook> {
-    // 返信用の1回限りのチャネルを作成
-    // resp_tx: 送信側（エンジンが使う）
-    // resp_rx: 受信側（このハンドラーが使う）
     let (resp_tx, resp_rx) = oneshot::channel();
-    
-    // エンジンにリクエストを送信
-    // _ = で戻り値を無視しているのは、送信エラーはここでは処理しないため
-    // （エラーならresp_rx.awaitで検知できる）
     let _ = state.sender.send(EngineMessage::GetOrderBook { respond_to: resp_tx }).await;
-    
-    // エンジンからの応答を待つ
-    // unwrap()の理由: エンジンが応答しないのは致命的エラーなのでパニックでよい
     let book = resp_rx.await.unwrap();
     Json(book)
 }
@@ -647,143 +174,49 @@ async fn main() {
         .expect("データベースの初期化に失敗しました");
 
     // =========================================================================
-    // =========================================================================
     // Step 1: データをメモリにロード (AccountManagerの初期化)
     // =========================================================================
     let mut account_manager = AccountManager::new();
     let initial_balances = db::get_balances(&db_pool, user_id).await.unwrap_or_default();
     
-    for b in initial_balances {
+    for b in &initial_balances {
         account_manager.load_balance(b.user_id, &b.asset, b.available, b.locked);
     }
-    println!("✅ 残高ロード完了: {} 件", account_manager.balances.len());
+    println!("✅ 残高ロード完了: {} 件", initial_balances.len());
 
     // =========================================================================
     // Step 2: DB Writer Actor（永続化タスク）を起動
     // =========================================================================
-    let (db_tx, mut db_rx) = mpsc::channel::<DbMessage>(10000);
+    let (db_tx, db_rx) = mpsc::channel::<DbMessage>(10000);
     let db_pool_for_writer = db_pool.clone();
     
     tokio::spawn(async move {
-        // メッセージが来るたびにDBに書き込む
-        // エラーが出てもログに出すだけでクラッシュさせない
-        while let Some(msg) = db_rx.recv().await {
-            match msg {
-                DbMessage::UpdateBalance { user_id, asset, available, locked } => {
-                    if let Err(e) = db::update_balance(&db_pool_for_writer, user_id, &asset, available, locked).await {
-                        eprintln!("DB Error (UpdateBalance): {}", e);
-                    }
-                }
-                DbMessage::SaveTrade { maker_order_id, taker_order_id, price, quantity, timestamp, user_id } => {
-                    if let Err(e) = db::save_trade(&db_pool_for_writer, maker_order_id, taker_order_id, price, quantity, timestamp, user_id).await {
-                        eprintln!("DB Error (SaveTrade): {}", e);
-                    }
-                }
-            }
-        }
+        db::run_db_writer(db_rx, db_pool_for_writer).await;
     });
 
     // =========================================================================
     // Step 3: Engine Actor（マッチングエンジン）を起動
     // =========================================================================
-    let (tx, mut rx) = mpsc::channel::<EngineMessage>(10000);
+    let (tx, rx) = mpsc::channel::<EngineMessage>(10000);
+    let engine_db_tx = db_tx.clone();
 
+    // engine::run_matching_engine は async fn なので await が必要だが、
+    // ここでは spawn するので async move ブロック内で呼び出す
     tokio::spawn(async move {
-        let mut orderbook = OrderBook::new();
-        let mut trades_history: Vec<Trade> = Vec::new();
-        // account_managerはmoveされる（所有権がこのタスクに移る）
-
-        while let Some(msg) = rx.recv().await {
-            match msg {
-                EngineMessage::PlaceOrder { order, respond_to } => {
-                    // 1. 残高チェック & ロック
-                    if let Some(uid) = order.user_id {
-                        if let Err(e) = account_manager.try_lock_balance(&uid, order.side, order.price, order.quantity) {
-                            eprintln!("Order Rejected: {}", e);
-                            // エラー時は空のトレードリストを返して終了
-                            let _ = respond_to.send(vec![]);
-                            continue;
-                        }
-                        // ロック成功 → DBに通知
-                        // 注意: ここのロック状態も永続化すべきだが、厳密には「注文ID」と紐づける必要がある。
-                        // 今回は簡易的に残高だけ更新通知を送る。
-                        let (avail, locked) = account_manager.get_balance(&uid, if order.side == Side::Buy { "USDC" } else { "BAD" });
-                        let _ = db_tx.send(DbMessage::UpdateBalance { 
-                            user_id: uid, 
-                            asset: (if order.side == Side::Buy { "USDC" } else { "BAD" }).to_string(), 
-                            available: avail, 
-                            locked 
-                        }).await;
-                    }
-
-                    // 2. マッチング実行
-                    let new_trades = orderbook.process_order(order.clone());
-                    
-                    // 3. 約定処理 (残高移動)
-                    for _trade in &new_trades {
-                        // Maker（板にいた人）の処理
-                        // シミュレータの注文(user_id=None)は無視する
-                        // しかし、注文IDから元のUserを探す仕組みがまだないため、
-                        // ここでは「今回のTaker」がユーザーの場合のみ処理する簡易実装とする
-                        // ★ 本来は OrderBook内の Order に user_id が入っているので、それを使うべき
-                        // process_order の返り値 Trade には user_id がない。これが必要。
-                    }
-                    
-                    // ★ Trade構造体に user_id を持たせていないため、ここで詰まる。
-                    // 修正: Trade構造体に user_id はあるが、maker/takerのどちらか不明確。
-                    // 正しい実装: process_order が返す Trade には maker_order と taker_order の情報が必要。
-                    // ここでロジックを修正する必要がある。
-                    
-                    // 今回は Taker (注文を出した人) の残高更新だけを行う（Makerはシミュレータと仮定）
-                     if let Some(taker_uid) = order.user_id {
-                        for trade in &new_trades {
-                            // Takerの残高更新
-                            account_manager.on_trade_match(&taker_uid, order.side, trade.price, trade.quantity);
-                            
-                            // DBに保存
-                            let _ = db_tx.send(DbMessage::SaveTrade {
-                                maker_order_id: trade.maker_id,
-                                taker_order_id: trade.taker_id,
-                                price: trade.price,
-                                quantity: trade.quantity,
-                                timestamp: trade.timestamp,
-                                user_id: Some(taker_uid),
-                            }).await;
-                        }
-                        
-                        // 残高変更をDBに通知 (USDCとBAD両方)
-                        let (usdc_av, usdc_lk) = account_manager.get_balance(&taker_uid, "USDC");
-                        let _ = db_tx.send(DbMessage::UpdateBalance { user_id: taker_uid, asset: "USDC".to_string(), available: usdc_av, locked: usdc_lk }).await;
-                        
-                        let (bad_av, bad_lk) = account_manager.get_balance(&taker_uid, "BAD");
-                        let _ = db_tx.send(DbMessage::UpdateBalance { user_id: taker_uid, asset: "BAD".to_string(), available: bad_av, locked: bad_lk }).await;
-                    }
-
-                    trades_history.extend(new_trades.clone());
-                    let _ = respond_to.send(new_trades);
-                },
-
-                EngineMessage::GetOrderBook { respond_to } => {
-                    let _ = respond_to.send(orderbook.clone());
-                },
-                EngineMessage::GetTrades { respond_to } => {
-                    let _ = respond_to.send(trades_history.clone());
-                }
-            }
-            
-            if trades_history.len() > 5000 {
-                let tail = trades_history.len() - 2000;
-                trades_history.drain(0..tail);
-            }
-        }
+        engine::run_matching_engine(rx, engine_db_tx, account_manager).await;
     });
 
     // =========================================================================
-    // Step 3: Webサーバーのセットアップ
+    // Step 4: 市場シミュレータを起動
     // =========================================================================
-    
-    // Arc（Atomic Reference Counting）でラップ
-    // 理由: 複数のタスク/スレッドで安全に共有するため
+    let sim_sender = tx.clone();
+    tokio::spawn(async move {
+        simulator::run_market_simulator(sim_sender).await;
+    });
+
+    // =========================================================================
+    // Step 5: Webサーバーを起動
+    // =========================================================================
     let state = Arc::new(AppState {
         sender: tx.clone(),     // チャネルの送信側をクローン
         db_pool: db_pool.clone(), // DBプール
@@ -795,133 +228,12 @@ async fn main() {
         .route("/orderbook", get(get_orderbook)) // GET /orderbook
         .route("/trades", get(get_trades))       // GET /trades  
         .route("/order", post(create_order))     // POST /order
-        .route("/balance", get(get_balance))     // GET /balance (新規追加)
+        .route("/balance", get(get_balance))     // GET /balance
         .layer(CorsLayer::permissive())          // CORS許可（開発用に全許可）
         .with_state(state.clone());              // ハンドラーに状態を渡す
 
-    // =========================================================================
-    // Step 4: 市場シミュレータを起動
-    // =========================================================================
-    // 
-    // 実際の取引参加者をシミュレートして、リアルな板を作ります。
-    // 10ミリ秒ごとにランダムな注文を生成します。
-    let sim_sender = tx.clone();
-    tokio::spawn(async move {
-        // 10ミリ秒ごとに発火するタイマー
-        let mut interval = tokio::time::interval(std::time::Duration::from_millis(10));
-        let mut id_counter: u64 = 2000000; // 注文IDのカウンター
-        let mut base_price: Decimal = dec!(100.0);   // 基準価格（価格はこの周辺で動く）
-
-        loop {
-            interval.tick().await; // 10ミリ秒待つ
-            id_counter += 1;
-
-            // ----------------------------------------------------
-            // 現在の板情報を取得
-            // ----------------------------------------------------
-            // シミュレータがリアルな注文を出すには、現在の最良買値/売値を知る必要がある
-            // エンジンに問い合わせて取得
-            let (resp_tx, resp_rx) = oneshot::channel();
-            let _ = sim_sender.send(EngineMessage::GetOrderBook { respond_to: resp_tx }).await;
-            let book = match resp_rx.await {
-                Ok(b) => b,
-                Err(_) => break, // エンジンが停止していたらシミュレータも終了
-            };
-
-            // ----------------------------------------------------
-            // 乱数生成器の使用を .await の前に限定する
-            // ----------------------------------------------------
-            // 
-            // 【重要】Rustのasync/await特有の問題
-            // 
-            // rand::rngが返す乱数生成器は `!Send` （スレッド間で送れない）
-            // 理由: 内部でRc（スレッドセーフでない参照カウント）を使っているため
-            // 
-            // tokio::spawnは、タスクを異なるスレッドで実行する可能性がある。
-            // .awaitを挟むと、その前後で異なるスレッドになる可能性がある。
-            // 
-            // → !Send な値が .await をまたいで生存していると、コンパイルエラーになる
-            // 
-            // 解決策: ブロック {} を使って、rngのスコープを .await の前に限定する
-            // ブロックを抜けるとrngはドロップされるので、.await後には存在しない
-            // 
-            let (price, quantity, side) = {
-                let mut rng = rand::rng();
-
-                // 最良買値と最良売値を取得（なければデフォルト値）
-                // Decimalはそのままコピーできる（Copyトレイト実装済み）
-                let best_bid = book.bids.keys().next_back().copied().unwrap_or(base_price - dec!(0.5));
-                let best_ask = book.asks.keys().next().copied().unwrap_or(base_price + dec!(0.5));
-                let mid_price = (best_bid + best_ask) / dec!(2); // 仲値
-
-                // 1%の確率で基準価格を更新（価格のドリフトをシミュレート）
-                if rng.random_bool(0.01) {
-                    base_price = mid_price;
-                }
-                
-                // 10%の確率でテイカー注文（すぐに約定する注文）
-                // 90%はメイカー注文（板に残る注文）
-                let is_taker = rng.random_bool(0.10);
-
-                if is_taker {
-                    // テイカー: 板の反対側をすぐに約定させる価格で注文
-                    let side = if rng.random_bool(0.5) { Side::Buy } else { Side::Sell };
-                    let price = match side {
-                        Side::Buy => best_ask + dec!(0.1),   // 最安売値より高くして確実に約定
-                        Side::Sell => best_bid - dec!(0.1), // 最高買値より安くして確実に約定
-                    };
-                    let qty = rng.random_range(5..50); // 小さめの数量
-                    (price, qty, side)
-                } else {
-                    // メイカー: スプレッド内に注文を置く
-                    let side = if rng.random_bool(0.5) { Side::Buy } else { Side::Sell };
-                    // ランダムなオフセットを生成してDecimalに変換
-                    let spread_offset_f64: f64 = rng.random_range(0.01..1.5);
-                    let spread_offset = Decimal::try_from(spread_offset_f64).unwrap_or(dec!(0.5));
-                    let price = match side {
-                        Side::Buy => (best_bid - spread_offset).max(dec!(0.1)), // 最良買値より少し下
-                        Side::Sell => best_ask + spread_offset,                 // 最良売値より少し上
-                    };
-                    // 価格を小数点3桁に丸める
-                    let price = price.round_dp(3);
-                    let qty = rng.random_range(50..500); // 大きめの数量
-                    (price, qty, side)
-                }
-            }; // ← ここでrngがドロップされる
-
-            // 注文オブジェクトを作成
-            let new_order = Order {
-                id: id_counter,
-                price,
-                quantity,
-                side,
-                user_id: None, // シミュレータの注文は所有者なし
-            };
-
-            // エンジンに注文を送信
-            // ここに .await があるが、rngはすでにドロップされているので問題なし
-            let (done_tx, _done_rx) = oneshot::channel();
-            let _ = sim_sender.send(EngineMessage::PlaceOrder { 
-                order: new_order, 
-                respond_to: done_tx 
-            }).await;
-            
-            // 応答を待たない理由: シミュレータは高速にループし続けたい
-            // 約定結果が必要ないので、受信側(_done_rx)は使わずに破棄
-        }
-    });
-
-    // =========================================================================
-    // Step 5: サーバーを起動
-    // =========================================================================
     println!("サーバー起動中: http://localhost:8000");
     
-    // TCPリスナーをバインド
-    // 0.0.0.0 は「すべてのネットワークインターフェース」を意味する
-    // → localhost以外からもアクセス可能になる
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8000").await.unwrap();
-    
-    // サーバーを起動し、リクエストの処理を開始
-    // この行は通常リターンしない（サーバーが停止するまで）
     axum::serve(listener, app).await.unwrap();
 }
