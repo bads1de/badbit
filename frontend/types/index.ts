@@ -5,7 +5,7 @@ export interface Order {
   price: string; // Decimal string
   quantity: number;
   side: Side;
-  user_id?: string; // Optional UUID
+  user_id?: string;
 }
 
 export interface OrderBook {

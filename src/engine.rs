@@ -104,12 +104,14 @@ pub async fn run_matching_engine(
                         }).await;
                     }
                     
-                    // 残高変更をDBに通知 (USDCとBAD両方)
-                    let (usdc_av, usdc_lk) = account_manager.get_balance(&taker_uid, "USDC");
-                    let _ = db_tx.send(DbMessage::UpdateBalance { user_id: taker_uid, asset: "USDC".to_string(), available: usdc_av, locked: usdc_lk }).await;
-                    
-                    let (bad_av, bad_lk) = account_manager.get_balance(&taker_uid, "BAD");
-                    let _ = db_tx.send(DbMessage::UpdateBalance { user_id: taker_uid, asset: "BAD".to_string(), available: bad_av, locked: bad_lk }).await;
+                    if !new_trades.is_empty() {
+                        // 残高変更をDBに通知 (USDCとBAD両方)
+                        let (usdc_av, usdc_lk) = account_manager.get_balance(&taker_uid, "USDC");
+                        let _ = db_tx.send(DbMessage::UpdateBalance { user_id: taker_uid, asset: "USDC".to_string(), available: usdc_av, locked: usdc_lk }).await;
+                        
+                        let (bad_av, bad_lk) = account_manager.get_balance(&taker_uid, "BAD");
+                        let _ = db_tx.send(DbMessage::UpdateBalance { user_id: taker_uid, asset: "BAD".to_string(), available: bad_av, locked: bad_lk }).await;
+                    }
                 }
 
                 trades_history.extend(new_trades.clone());

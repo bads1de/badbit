@@ -21,12 +21,14 @@
 // =============================================================================
 
 // --- 内部モジュール ---
-mod models;
-mod db;
-mod account;
-mod orderbook;
-mod engine;
-mod simulator;
+// モジュールは src/lib.rs に移動し、ライブラリとしてインポートします
+// mod models;
+// mod db;
+// mod account;
+// mod orderbook;
+// mod engine;
+// mod simulator;
+
 
 // --- 外部クレート（ライブラリ）のインポート ---
 use axum::{
@@ -43,11 +45,14 @@ use tower_http::cors::CorsLayer;  // CORSヘッダーを追加するミドルウ
 use uuid::Uuid;               // ユニークID生成
 
 // --- モジュールからのインポート ---
-use crate::models::{Order, Trade, Side};
-use crate::orderbook::OrderBook;
-use crate::account::AccountManager;
-use crate::engine::EngineMessage;
-use crate::db::DbMessage;
+// --- モジュールからのインポート ---
+use rust_matching_engine::models::{Order, Trade, Side};
+use rust_matching_engine::orderbook::OrderBook;
+use rust_matching_engine::account::AccountManager;
+use rust_matching_engine::engine::{self, EngineMessage};
+use rust_matching_engine::db::{self, DbMessage};
+use rust_matching_engine::simulator;
+
 
 // =============================================================================
 // Webサーバーの状態
