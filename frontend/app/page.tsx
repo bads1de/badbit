@@ -39,8 +39,9 @@ export default function Home() {
           setTrades(sortedTrades);
 
           // Calculate Market Stats
+          // 注意: priceはDecimal（文字列）で来るのでparseFloatで変換
           const currentPrice =
-            sortedTrades.length > 0 ? sortedTrades[0].price : 0;
+            sortedTrades.length > 0 ? parseFloat(sortedTrades[0].price) : 0;
           const now = Date.now();
           const oneDayAgo = now - 24 * 60 * 60 * 1000;
           const recentTrades = sortedTrades.filter(
@@ -48,13 +49,13 @@ export default function Home() {
           );
           const startPrice =
             recentTrades.length > 0
-              ? recentTrades[recentTrades.length - 1].price
+              ? parseFloat(recentTrades[recentTrades.length - 1].price)
               : currentPrice;
           const priceChange = currentPrice - startPrice;
           const priceChangePercent =
             startPrice > 0 ? (priceChange / startPrice) * 100 : 0;
           const volume24h = recentTrades.reduce(
-            (acc: number, t: Trade) => acc + t.price * t.quantity,
+            (acc: number, t: Trade) => acc + parseFloat(t.price) * t.quantity,
             0,
           );
 
@@ -76,7 +77,7 @@ export default function Home() {
   }, []);
 
   const chartTrades = [...trades].reverse().map((t) => ({
-    price: t.price,
+    price: parseFloat(t.price), // Decimal文字列を数値に変換
     volume: t.quantity,
     timestamp: Number(t.timestamp),
   }));

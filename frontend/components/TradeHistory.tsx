@@ -34,7 +34,7 @@ export default function TradeHistory({ trades }: Props) {
               <span
                 className={`${isBuy ? "text-[#26E8A6]" : "text-[#ff5353]"}`}
               >
-                {trade.price.toFixed(2)}
+                {parseFloat(trade.price).toFixed(2)}
               </span>
               <span className="text-right text-zinc-300">
                 {trade.quantity.toLocaleString()}

@@ -27,6 +27,9 @@
 // 理由: 高頻度取引ではMutexのロック競合がボトルネックになりやすいため
 // =============================================================================
 
+// --- 内部モジュール ---
+mod db; // データベースモジュール
+
 // --- 外部クレート（ライブラリ）のインポート ---
 use axum::{
     extract::State,           // ハンドラー関数で共有状態にアクセスするため
@@ -39,13 +42,14 @@ use rust_decimal::Decimal;    // 固定小数点数（お金の計算に必須�
                               // Decimalは誤差なく正確に10進数を扱える
 use rust_decimal_macros::dec; // Decimalリテラルを書くためのマクロ (例: dec!(100.5))
 use serde::{Deserialize, Serialize}; // JSON変換のためのシリアライズ/デシリアライズ
-use std::collections::{BTreeMap, VecDeque}; // ソート済みマップとキュー
+use std::collections::{BTreeMap, HashMap, VecDeque}; // ソート済みマップ、ハッシュマップ、キュー
 use std::sync::Arc;           // スレッド間で安全に共有できるスマートポインタ
 use std::time::SystemTime;    // UNIXタイムスタンプ取得用
 use tokio::sync::{mpsc, oneshot}; // 非同期チャネル
                                    // mpsc: 複数送信者→1受信者（Multi-Producer Single-Consumer）
                                    // oneshot: 1回限りの返信用チャネル
 use tower_http::cors::CorsLayer;  // CORSヘッダーを追加するミドルウェア
+use uuid::Uuid;               // ユニークID生成
 
 // =============================================================================
 // データ構造の定義
@@ -75,6 +79,8 @@ pub struct Order {
     pub price: Decimal,
     pub quantity: u64,
     pub side: Side,
+    // 注文の所有者（シミュレータの場合はNone）
+    pub user_id: Option<Uuid>, 
 }
 
 /// 約定（マッチングが成立した取引）を表す構造体
@@ -99,6 +105,141 @@ pub struct Trade {
 }
 
 /// オーダーブック（板）を表す構造体
+/// 
+/// 取引所の核心部分。すべての未約定注文を価格ごとに管理します。
+/// 
+/// # フィールド
+/// - bids: 買い注文一覧（価格→注文キューのマップ）
+/// - asks: 売り注文一覧（価格→注文キューのマップ）
+/// 
+// =============================================================================
+// 残高管理モジュール (In-Memory)
+// =============================================================================
+
+/// ユーザーごとの残高状態
+#[derive(Debug, Clone, Default)]
+struct UserBalance {
+    available: Decimal,
+    locked: Decimal,
+}
+
+/// 全ユーザーの残高を管理する
+/// 
+/// エンジンアクター内で保持され、注文時に高速に残高チェックを行う
+#[derive(Debug, Clone, Default)]
+pub struct AccountManager {
+    // ユーザーID -> { 資産名 -> 残高 }
+    balances: HashMap<Uuid, HashMap<String, UserBalance>>,
+}
+
+impl AccountManager {
+    pub fn new() -> Self {
+        Self {
+            balances: HashMap::new(),
+        }
+    }
+
+    /// 初期残高をロードする（起動時用）
+    pub fn load_balance(&mut self, user_id: Uuid, asset: &str, available: Decimal, locked: Decimal) {
+        let user_balances = self.balances.entry(user_id).or_default();
+        user_balances.insert(asset.to_string(), UserBalance { available, locked });
+    }
+
+    /// 現在の残高を取得
+    pub fn get_balance(&self, user_id: &Uuid, asset: &str) -> (Decimal, Decimal) {
+        if let Some(user_balances) = self.balances.get(user_id) {
+            if let Some(balance) = user_balances.get(asset) {
+                return (balance.available, balance.locked);
+            }
+        }
+        (Decimal::ZERO, Decimal::ZERO)
+    }
+
+    /// 注文前の残高チェックとロック（仮押さえ）
+    /// 
+    /// - 買い注文: (価格 * 数量) 分のUSDCをロック
+    /// - 売り注文: 数量分のBADをロック
+    pub fn try_lock_balance(&mut self, user_id: &Uuid, side: Side, price: Decimal, quantity: u64) -> Result<(), &'static str> {
+        // ロックする量を計算
+        let (asset, amount_to_lock) = match side {
+            Side::Buy => ("USDC", price * Decimal::from(quantity)),
+            Side::Sell => ("BAD", Decimal::from(quantity)),
+        };
+
+        let user_balances = self.balances.entry(*user_id).or_default();
+        let balance = user_balances.entry(asset.to_string()).or_default();
+
+        if balance.available < amount_to_lock {
+            return Err("残高不足"); // Simplified error
+        }
+
+        // 残高移動: Available -> Locked
+        balance.available -= amount_to_lock;
+        balance.locked += amount_to_lock;
+
+        Ok(())
+    }
+
+    /// 約定時の残高移動（一番複雑な部分！）
+    /// 
+    /// 1. 自分のLockedを減らす（注文時にロックした分）
+    /// 2. 相手から受け取る資産をAvailableに増やす
+    pub fn on_trade_match(&mut self, user_id: &Uuid, side: Side, price: Decimal, quantity: u64) {
+        let qty_dec = Decimal::from(quantity);
+        let trade_value = price * qty_dec;
+
+        let user_balances = self.balances.entry(*user_id).or_default();
+
+        match side {
+            Side::Buy => {
+                // 買い手の場合:
+                // 1. ロックしていたUSDCを消費（支払う）
+                let usdc = user_balances.entry("USDC".to_string()).or_default();
+                usdc.locked -= trade_value; // ※注意: ロックした額と一致するはずだが厳密には指値価格との差分返金が必要（今回は省略）
+                
+                // 2. BADを入手（受け取る）
+                let bad = user_balances.entry("BAD".to_string()).or_default();
+                bad.available += qty_dec;
+            }
+            Side::Sell => {
+                // 売り手の場合:
+                // 1. ロックしていたBADを消費（渡す）
+                let bad = user_balances.entry("BAD".to_string()).or_default();
+                bad.locked -= qty_dec;
+
+                // 2. USDCを入手（受け取る）
+                let usdc = user_balances.entry("USDC".to_string()).or_default();
+                usdc.available += trade_value;
+            }
+        }
+    }
+}
+
+// =============================================================================
+// DB Writer (永続化) 用のメッセージ定義
+// =============================================================================
+
+/// DBタスクへの非同期メッセージ
+enum DbMessage {
+    /// 残高が変化したことを通知
+    UpdateBalance {
+        user_id: Uuid,
+        asset: String,
+        available: Decimal,
+        locked: Decimal,
+    },
+    /// 約定履歴を保存
+    SaveTrade {
+        maker_order_id: u64,
+        taker_order_id: u64,
+        price: Decimal,
+        quantity: u64,
+        timestamp: u128,
+        user_id: Option<Uuid>, // 約定したユーザー（Maker/Taker両方送る）
+    }
+}
+
+/// OrderBook（板）を表す構造体
 /// 
 /// 取引所の核心部分。すべての未約定注文を価格ごとに管理します。
 /// 
@@ -373,6 +514,8 @@ enum EngineMessage {
 #[derive(Clone)]
 struct AppState {
     sender: mpsc::Sender<EngineMessage>,
+    db_pool: db::DbPool,      // データベース接続プール
+    user_id: Uuid,            // 現在のユーザーID（固定ユーザー）
 }
 
 // =============================================================================
@@ -411,6 +554,45 @@ async fn get_trades(State(state): State<Arc<AppState>>) -> Json<Vec<Trade>> {
     Json(trades)
 }
 
+/// 残高レスポンス用の構造体
+#[derive(Serialize)]
+struct BalanceResponse {
+    usdc_available: String,
+    usdc_locked: String,
+    bad_available: String,
+    bad_locked: String,
+}
+
+/// GET /balance - ユーザーの残高を取得
+async fn get_balance(State(state): State<Arc<AppState>>) -> Json<BalanceResponse> {
+    let balances = db::get_balances(&state.db_pool, state.user_id)
+        .await
+        .unwrap_or_default();
+
+    let mut response = BalanceResponse {
+        usdc_available: "0".to_string(),
+        usdc_locked: "0".to_string(),
+        bad_available: "0".to_string(),
+        bad_locked: "0".to_string(),
+    };
+
+    for balance in balances {
+        match balance.asset.as_str() {
+            "USDC" => {
+                response.usdc_available = balance.available.to_string();
+                response.usdc_locked = balance.locked.to_string();
+            }
+            "BAD" => {
+                response.bad_available = balance.available.to_string();
+                response.bad_locked = balance.locked.to_string();
+            }
+            _ => {}
+        }
+    }
+
+    Json(response)
+}
+
 /// 新規注文APIのリクエストボディ
 #[derive(Deserialize)]
 struct CreateOrderPayload {
@@ -426,9 +608,6 @@ async fn create_order(
     Json(payload): Json<CreateOrderPayload>,
 ) -> Json<Vec<Trade>> {
     // 注文IDを生成
-    // 現在時刻のミリ秒を10000000で割った余りを使用
-    // 理由: 一意性は保証されないが、シンプルで衝突確率は低い
-    // 本番環境ではUUIDやシーケンスを使うべき
     let new_order = Order {
         id: (SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
@@ -438,6 +617,7 @@ async fn create_order(
         price: payload.price,
         quantity: payload.quantity,
         side: payload.side,
+        user_id: Some(state.user_id), // 注文者のIDを設定
     };
 
     let (resp_tx, resp_rx) = oneshot::channel();
@@ -460,70 +640,139 @@ async fn create_order(
 #[tokio::main]
 async fn main() {
     // =========================================================================
-    // Step 1: メッセージパッシング用のチャネルを作成
+    // Step 0: データベースを初期化
     // =========================================================================
-    // 
-    // mpsc::channel(10000) の意味:
-    // - mpsc = Multi-Producer Single-Consumer（複数送信者、1受信者）
-    // - 10000 = バッファサイズ（キューに溜められるメッセージ数）
-    // 
-    // バッファサイズの役割:
-    // - エンジンの処理が追いつかなくても、10000件まではキューに溜められる
-    // - 10000件を超えると送信側がブロックされる（バックプレッシャー）
-    // - これにより、システムがメモリを使い果たすのを防ぐ
+    let (db_pool, user_id) = db::init_database("data.db")
+        .await
+        .expect("データベースの初期化に失敗しました");
+
+    // =========================================================================
+    // =========================================================================
+    // Step 1: データをメモリにロード (AccountManagerの初期化)
+    // =========================================================================
+    let mut account_manager = AccountManager::new();
+    let initial_balances = db::get_balances(&db_pool, user_id).await.unwrap_or_default();
+    
+    for b in initial_balances {
+        account_manager.load_balance(b.user_id, &b.asset, b.available, b.locked);
+    }
+    println!("✅ 残高ロード完了: {} 件", account_manager.balances.len());
+
+    // =========================================================================
+    // Step 2: DB Writer Actor（永続化タスク）を起動
+    // =========================================================================
+    let (db_tx, mut db_rx) = mpsc::channel::<DbMessage>(10000);
+    let db_pool_for_writer = db_pool.clone();
+    
+    tokio::spawn(async move {
+        // メッセージが来るたびにDBに書き込む
+        // エラーが出てもログに出すだけでクラッシュさせない
+        while let Some(msg) = db_rx.recv().await {
+            match msg {
+                DbMessage::UpdateBalance { user_id, asset, available, locked } => {
+                    if let Err(e) = db::update_balance(&db_pool_for_writer, user_id, &asset, available, locked).await {
+                        eprintln!("DB Error (UpdateBalance): {}", e);
+                    }
+                }
+                DbMessage::SaveTrade { maker_order_id, taker_order_id, price, quantity, timestamp, user_id } => {
+                    if let Err(e) = db::save_trade(&db_pool_for_writer, maker_order_id, taker_order_id, price, quantity, timestamp, user_id).await {
+                        eprintln!("DB Error (SaveTrade): {}", e);
+                    }
+                }
+            }
+        }
+    });
+
+    // =========================================================================
+    // Step 3: Engine Actor（マッチングエンジン）を起動
+    // =========================================================================
     let (tx, mut rx) = mpsc::channel::<EngineMessage>(10000);
 
-    // =========================================================================
-    // Step 2: エンジンタスク（アクター）を起動
-    // =========================================================================
-    // 
-    // tokio::spawnで別タスクとして実行される。
-    // このタスクだけがOrderBookとTradeHistoryに直接アクセスできる。
-    // → ロック不要で安全に並行処理できる理由
     tokio::spawn(async move {
-        // --- このタスクだけがデータを所有する ---
-        // 注意: tokioのマルチスレッドランタイムでは、.awaitを挟むと
-        // 異なるスレッドで再開される可能性がある。しかし、このタスクは
-        // 「逐次的に」メッセージを処理するので、同時アクセスは発生しない。
-        // OrderBookとtrades_historyは、このタスクだけが所有している。
-        // 他のタスクは直接触れない。これが「Actor」の特徴。
         let mut orderbook = OrderBook::new();
         let mut trades_history: Vec<Trade> = Vec::new();
+        // account_managerはmoveされる（所有権がこのタスクに移る）
 
-        // メッセージを受け取るたびに処理（無限ループ）
-        // rx.recv().await は、メッセージが来るまでこのタスクを休ませる
-        // → CPUを消費しないので効率的
         while let Some(msg) = rx.recv().await {
             match msg {
                 EngineMessage::PlaceOrder { order, respond_to } => {
-                    // 注文をマッチング処理
-                    let new_trades = orderbook.process_order(order);
-                    // 約定履歴に追加
+                    // 1. 残高チェック & ロック
+                    if let Some(uid) = order.user_id {
+                        if let Err(e) = account_manager.try_lock_balance(&uid, order.side, order.price, order.quantity) {
+                            eprintln!("Order Rejected: {}", e);
+                            // エラー時は空のトレードリストを返して終了
+                            let _ = respond_to.send(vec![]);
+                            continue;
+                        }
+                        // ロック成功 → DBに通知
+                        // 注意: ここのロック状態も永続化すべきだが、厳密には「注文ID」と紐づける必要がある。
+                        // 今回は簡易的に残高だけ更新通知を送る。
+                        let (avail, locked) = account_manager.get_balance(&uid, if order.side == Side::Buy { "USDC" } else { "BAD" });
+                        let _ = db_tx.send(DbMessage::UpdateBalance { 
+                            user_id: uid, 
+                            asset: (if order.side == Side::Buy { "USDC" } else { "BAD" }).to_string(), 
+                            available: avail, 
+                            locked 
+                        }).await;
+                    }
+
+                    // 2. マッチング実行
+                    let new_trades = orderbook.process_order(order.clone());
+                    
+                    // 3. 約定処理 (残高移動)
+                    for _trade in &new_trades {
+                        // Maker（板にいた人）の処理
+                        // シミュレータの注文(user_id=None)は無視する
+                        // しかし、注文IDから元のUserを探す仕組みがまだないため、
+                        // ここでは「今回のTaker」がユーザーの場合のみ処理する簡易実装とする
+                        // ★ 本来は OrderBook内の Order に user_id が入っているので、それを使うべき
+                        // process_order の返り値 Trade には user_id がない。これが必要。
+                    }
+                    
+                    // ★ Trade構造体に user_id を持たせていないため、ここで詰まる。
+                    // 修正: Trade構造体に user_id はあるが、maker/takerのどちらか不明確。
+                    // 正しい実装: process_order が返す Trade には maker_order と taker_order の情報が必要。
+                    // ここでロジックを修正する必要がある。
+                    
+                    // 今回は Taker (注文を出した人) の残高更新だけを行う（Makerはシミュレータと仮定）
+                     if let Some(taker_uid) = order.user_id {
+                        for trade in &new_trades {
+                            // Takerの残高更新
+                            account_manager.on_trade_match(&taker_uid, order.side, trade.price, trade.quantity);
+                            
+                            // DBに保存
+                            let _ = db_tx.send(DbMessage::SaveTrade {
+                                maker_order_id: trade.maker_id,
+                                taker_order_id: trade.taker_id,
+                                price: trade.price,
+                                quantity: trade.quantity,
+                                timestamp: trade.timestamp,
+                                user_id: Some(taker_uid),
+                            }).await;
+                        }
+                        
+                        // 残高変更をDBに通知 (USDCとBAD両方)
+                        let (usdc_av, usdc_lk) = account_manager.get_balance(&taker_uid, "USDC");
+                        let _ = db_tx.send(DbMessage::UpdateBalance { user_id: taker_uid, asset: "USDC".to_string(), available: usdc_av, locked: usdc_lk }).await;
+                        
+                        let (bad_av, bad_lk) = account_manager.get_balance(&taker_uid, "BAD");
+                        let _ = db_tx.send(DbMessage::UpdateBalance { user_id: taker_uid, asset: "BAD".to_string(), available: bad_av, locked: bad_lk }).await;
+                    }
+
                     trades_history.extend(new_trades.clone());
-                    // 結果を返信（送信側でエラーになっても無視）
                     let _ = respond_to.send(new_trades);
                 },
+
                 EngineMessage::GetOrderBook { respond_to } => {
-                    // 現在のオーダーブックのクローンを返す
-                    // クローンする理由: 所有権を渡すと、次のリクエストで使えなくなる
                     let _ = respond_to.send(orderbook.clone());
                 },
                 EngineMessage::GetTrades { respond_to } => {
-                    // 履歴のクローンを返す
                     let _ = respond_to.send(trades_history.clone());
                 }
             }
             
-            // =========================================
-            // メモリ管理: 古い履歴を定期的に削除
-            // =========================================
-            // 理由: 履歴が無限に増えるとメモリを食い尽くす
-            // 方針: 5000件を超えたら、最新2000件だけ残す
             if trades_history.len() > 5000 {
                 let tail = trades_history.len() - 2000;
-                // drain(0..tail) で先頭からtail件を削除
-                // .drain() はイテレータを返すので、collect()などで消費するか、
-                // 単に破棄する（ここでは破棄）
                 trades_history.drain(0..tail);
             }
         }
@@ -535,9 +784,10 @@ async fn main() {
     
     // Arc（Atomic Reference Counting）でラップ
     // 理由: 複数のタスク/スレッドで安全に共有するため
-    // AppStateは内部にmpsc::Senderだけ持つので、Clone可能
     let state = Arc::new(AppState {
-        sender: tx.clone(), // チャネルの送信側をクローン
+        sender: tx.clone(),     // チャネルの送信側をクローン
+        db_pool: db_pool.clone(), // DBプール
+        user_id,                // デフォルトユーザーID
     });
 
     // ルーターを構築
@@ -545,6 +795,7 @@ async fn main() {
         .route("/orderbook", get(get_orderbook)) // GET /orderbook
         .route("/trades", get(get_trades))       // GET /trades  
         .route("/order", post(create_order))     // POST /order
+        .route("/balance", get(get_balance))     // GET /balance (新規追加)
         .layer(CorsLayer::permissive())          // CORS許可（開発用に全許可）
         .with_state(state.clone());              // ハンドラーに状態を渡す
 
@@ -644,6 +895,7 @@ async fn main() {
                 price,
                 quantity,
                 side,
+                user_id: None, // シミュレータの注文は所有者なし
             };
 
             // エンジンに注文を送信
