@@ -10,12 +10,12 @@ export default function OrderBook({ data }: Props) {
   // Sort Asks: Lowest Price (Best Ask) at the bottom
   const sortedAsks = Object.entries(data.asks)
     .sort((a, b) => parseFloat(b[0]) - parseFloat(a[0])) // Descending (High -> Low)
-    .slice(-15); // Take the last 15 (which are the lowest prices)
+    .slice(-7); // Take the last 7 (which are the lowest prices)
 
   // Sort Bids: Highest Price (Best Bid) at the top
   const sortedBids = Object.entries(data.bids)
     .sort((a, b) => parseFloat(b[0]) - parseFloat(a[0])) // Descending (High -> Low)
-    .slice(0, 15);
+    .slice(0, 7);
 
   // Calculate sizes and find max size for bars
   const askSizes = sortedAsks.map(([, orders]) =>
@@ -56,10 +56,10 @@ export default function OrderBook({ data }: Props) {
   return (
     <div className="flex flex-col h-full bg-[#13141b] text-xs font-mono">
       {/* Header */}
-      <div className="grid grid-cols-3 px-2 py-1.5 text-zinc-500 border-b border-white/5 bg-[#13141b]">
-        <span>Price</span>
-        <span className="text-right">Size</span>
-        <span className="text-right">Total</span>
+      <div className="grid grid-cols-[1fr_1fr_1fr] gap-1 px-3 py-1.5 text-zinc-500 border-b border-white/5 bg-[#13141b]">
+        <span className="truncate">Price</span>
+        <span className="text-right truncate">Size</span>
+        <span className="text-right truncate">Total</span>
       </div>
 
       {/* Asks (Sell) - Rendered from Top (High) to Bottom (Low/Best) */}
@@ -79,7 +79,7 @@ export default function OrderBook({ data }: Props) {
             return (
               <div
                 key={price}
-                className="grid grid-cols-3 px-2 py-0.5 hover:bg-white/5 cursor-pointer relative"
+                className="grid grid-cols-[1fr_1fr_1fr] gap-1 px-3 py-0.5 hover:bg-white/5 cursor-pointer relative"
               >
                 {/* Depth Bar */}
                 <div
@@ -87,11 +87,13 @@ export default function OrderBook({ data }: Props) {
                   style={{ width: `${barWidth}%` }}
                 />
 
-                <span className="text-[#ff5353] z-10 relative">{price}</span>
-                <span className="text-right text-zinc-300 z-10 relative">
+                <span className="text-[#ff5353] z-10 relative truncate">
+                  {price}
+                </span>
+                <span className="text-right text-zinc-300 z-10 relative truncate">
                   {size.toLocaleString()}
                 </span>
-                <span className="text-right text-zinc-500 z-10 relative">
+                <span className="text-right text-zinc-500 z-10 relative truncate">
                   {total.toLocaleString()}
                 </span>
               </div>
@@ -130,7 +132,7 @@ export default function OrderBook({ data }: Props) {
           return (
             <div
               key={price}
-              className="grid grid-cols-3 px-2 py-0.5 hover:bg-white/5 cursor-pointer relative"
+              className="grid grid-cols-[1fr_1fr_1fr] gap-1 px-3 py-0.5 hover:bg-white/5 cursor-pointer relative"
             >
               {/* Depth Bar */}
               <div
@@ -138,11 +140,13 @@ export default function OrderBook({ data }: Props) {
                 style={{ width: `${barWidth}%` }}
               />
 
-              <span className="text-[#26E8A6] z-10 relative">{price}</span>
-              <span className="text-right text-zinc-300 z-10 relative">
+              <span className="text-[#26E8A6] z-10 relative truncate">
+                {price}
+              </span>
+              <span className="text-right text-zinc-300 z-10 relative truncate">
                 {size.toLocaleString()}
               </span>
-              <span className="text-right text-zinc-500 z-10 relative">
+              <span className="text-right text-zinc-500 z-10 relative truncate">
                 {total.toLocaleString()}
               </span>
             </div>
