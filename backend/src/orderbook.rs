@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::time::SystemTime;
 use rust_decimal::Decimal;
 use serde::Serialize;
-use crate::models::{Order, Trade, Side};
+use crate::models::{Order, Trade, Side, OrderType};
 
 /// OrderBook（板）を表す構造体
 /// 
@@ -120,11 +120,16 @@ impl OrderBook {
                 // 注文数量がなくなるまでマッチングを続ける
                 while taker_order.quantity > 0 {
                     // 最安の売り注文の価格を取得
-                    // asks.keys().next() で最小キー（最安値）を取得
-                    // BTreeMapは昇順なのでnext()で最小値が得られる
                     let first_price = match self.asks.keys().next() {
-                        Some(&p) if p <= taker_price => p, // 買い希望価格以下なら取引可能
-                        _ => break, // マッチする売り注文がなければループ終了
+                        Some(&p) => match taker_order.order_type {
+                            OrderType::Limit => {
+                                // 指値: 買い希望価格 <= 売り注文価格 なら取引可能
+                                if p <= taker_price { p } else { break }
+                            },
+                            // 成行: 価格を問わずマッチ（最安値から約定）
+                            OrderType::Market => p,
+                        },
+                        None => break, // マッチする売り注文がなければループ終了
                     };
 
                     // その価格にある注文一覧を取得
@@ -167,9 +172,8 @@ impl OrderBook {
                     }
                 }
                 
-                // テイカー注文に残りがあれば、買い板に追加
-                // これで「指値注文」として板に載る
-                if taker_order.quantity > 0 {
+                // テイカー注文に残りがあり、かつ【指値注文】なら買い板に追加
+                if taker_order.quantity > 0 && taker_order.order_type == OrderType::Limit {
                     self.bids
                         .entry(taker_price)           // そのキーのエントリーを取得
                         .or_default()                 // なければデフォルト値（空のVecDeque）を作成
@@ -185,10 +189,16 @@ impl OrderBook {
                 
                 while taker_order.quantity > 0 {
                     // 最高買値を取得
-                    // next_back()を使う理由: BTreeMapは昇順なので、最大値は末尾にある
                     let first_price = match self.bids.keys().next_back() {
-                        Some(&p) if p >= taker_price => p, // 売り希望価格以上なら取引可能
-                        _ => break,
+                        Some(&p) => match taker_order.order_type {
+                            OrderType::Limit => {
+                                // 指値: 売り希望価格 >= 買い注文価格 なら取引可能
+                                if p >= taker_price { p } else { break }
+                            },
+                            // 成行: 価格を問わずマッチ（最高値から約定）
+                            OrderType::Market => p,
+                        },
+                        None => break,
                     };
 
                     let orders_at_price = self.bids.get_mut(&first_price).unwrap();
@@ -217,8 +227,8 @@ impl OrderBook {
                     }
                 }
                 
-                // 残りがあれば売り板に追加
-                if taker_order.quantity > 0 {
+                // 残りがあり、かつ【指値注文】なら売り板に追加
+                if taker_order.quantity > 0 && taker_order.order_type == OrderType::Limit {
                     self.asks
                         .entry(taker_price)
                         .or_default()                 // デフォルト値を使う（VecDequeは空のキュー）

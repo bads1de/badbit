@@ -1,4 +1,4 @@
-use rust_matching_engine::models::{Order, Side};
+use rust_matching_engine::models::{Order, Side, OrderType};
 use rust_decimal_macros::dec;
 use serde_json::json;
 
@@ -10,6 +10,7 @@ fn test_order_serialization() {
         quantity: 10,
         side: Side::Buy,
         user_id: None,
+        order_type: OrderType::Limit,
     };
 
     let json_str = serde_json::to_string(&order).unwrap();

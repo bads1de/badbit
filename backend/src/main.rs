@@ -45,7 +45,7 @@ use tower_http::cors::CorsLayer;  // CORSヘッダーを追加するミドルウ
 use uuid::Uuid;               // ユニークID生成
 
 // --- モジュールからのインポート ---
-use rust_matching_engine::models::{Order, Trade, Side};
+use rust_matching_engine::models::{Order, Trade, Side, OrderType};
 use rust_matching_engine::orderbook::OrderBook;
 use rust_matching_engine::account::AccountManager;
 use rust_matching_engine::engine::{self, EngineMessage};
@@ -132,6 +132,8 @@ struct CreateOrderPayload {
     price: Decimal,
     quantity: u64,
     side: Side,
+    #[serde(default = "default_order_type")]
+    order_type: OrderType,
 }
 
 /// POST /order - 新規注文を作成
@@ -146,10 +148,11 @@ async fn create_order(
             .unwrap()
             .as_millis()
             % 10000000) as u64,
-        price: payload.price,
+        price: payload.price, // 成行の場合は0などの値が入ってくる想定
         quantity: payload.quantity,
         side: payload.side,
         user_id: Some(state.user_id), // 注文者のIDを設定
+        order_type: payload.order_type,
     };
 
     let (resp_tx, resp_rx) = oneshot::channel();
@@ -163,6 +166,10 @@ async fn create_order(
     // 約定結果を受け取って返す
     let new_trades = resp_rx.await.unwrap();
     Json(new_trades)
+}
+
+fn default_order_type() -> OrderType {
+    OrderType::Limit
 }
 
 // =============================================================================

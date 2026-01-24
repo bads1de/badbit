@@ -12,13 +12,21 @@ pub enum Side {
     Sell,
 }
 
+/// 注文の種類
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OrderType {
+    Limit,  // 指値注文
+    Market, // 成行注文
+}
+
 /// 1つの注文を表す構造体
 /// 
 /// # フィールド
 /// - id: 注文を一意に識別するID
-/// - price: 希望価格（この価格で取引したい）
+/// - price: 希望価格（この価格で取引したい）。成行の場合は0または無視される
 /// - quantity: 数量（いくつ欲しいか/売りたいか）
 /// - side: 買いか売りか
+/// - order_type: 指値か成行か
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Order {
     pub id: u64,
@@ -27,7 +35,13 @@ pub struct Order {
     pub quantity: u64,
     pub side: Side,
     // 注文の所有者（シミュレータの場合はNone）
-    pub user_id: Option<Uuid>, 
+    pub user_id: Option<Uuid>,
+    #[serde(default = "default_order_type")] 
+    pub order_type: OrderType,
+}
+
+fn default_order_type() -> OrderType {
+    OrderType::Limit
 }
 
 /// 約定（マッチングが成立した取引）を表す構造体

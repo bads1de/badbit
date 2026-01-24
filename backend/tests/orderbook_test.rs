@@ -1,4 +1,4 @@
-use rust_matching_engine::models::{Order, Side};
+use rust_matching_engine::models::{Order, Side, OrderType};
 use rust_matching_engine::orderbook::OrderBook;
 use rust_decimal::Decimal;
 
@@ -14,6 +14,7 @@ fn create_order(id: u64, price: Decimal, quantity: u64, side: Side) -> Order {
         quantity,
         side,
         user_id: None,
+        order_type: OrderType::Limit,
     }
 }
 

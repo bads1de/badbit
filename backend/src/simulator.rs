@@ -3,7 +3,7 @@ use rand::Rng;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use crate::engine::EngineMessage;
-use crate::models::{Order, Side};
+use crate::models::{Order, Side, OrderType};
 
 /// 市場シミュレータを起動
 /// 
@@ -101,6 +101,7 @@ pub async fn run_market_simulator(sim_sender: mpsc::Sender<EngineMessage>) {
             quantity,
             side,
             user_id: None, // シミュレータの注文は所有者なし
+            order_type: OrderType::Limit,
         };
 
         // エンジンに注文を送信

@@ -1,7 +1,7 @@
 use rust_matching_engine::engine::{run_matching_engine, EngineMessage};
 use rust_matching_engine::account::AccountManager;
 use rust_matching_engine::db::DbMessage;
-use rust_matching_engine::models::{Order, Side};
+use rust_matching_engine::models::{Order, Side, OrderType};
 use rust_decimal_macros::dec;
 use uuid::Uuid;
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -21,7 +21,7 @@ async fn test_engine_place_order_no_match() {
 
     let (resp_tx, resp_rx) = oneshot::channel();
     eng_tx.send(EngineMessage::PlaceOrder { 
-        order: Order { id: 1, price: dec!(100), quantity: 10, side: Side::Sell, user_id: Some(user_id) }, 
+        order: Order { id: 1, price: dec!(100), quantity: 10, side: Side::Sell, user_id: Some(user_id), order_type: OrderType::Limit }, 
         respond_to: resp_tx 
     }).await.unwrap();
 
@@ -59,7 +59,7 @@ async fn test_engine_match_trade() {
     // 1. Place Maker Order
     let (resp_tx1, resp_rx1) = oneshot::channel();
     eng_tx.send(EngineMessage::PlaceOrder { 
-        order: Order { id: 1, price: dec!(100), quantity: 10, side: Side::Sell, user_id: Some(maker_id) }, 
+        order: Order { id: 1, price: dec!(100), quantity: 10, side: Side::Sell, user_id: Some(maker_id), order_type: OrderType::Limit }, 
         respond_to: resp_tx1 
     }).await.unwrap();
     let _ = resp_rx1.await.unwrap();
@@ -75,7 +75,7 @@ async fn test_engine_match_trade() {
     // 2. Place Taker Order
     let (resp_tx2, resp_rx2) = oneshot::channel();
     eng_tx.send(EngineMessage::PlaceOrder { 
-        order: Order { id: 2, price: dec!(100), quantity: 10, side: Side::Buy, user_id: Some(taker_id) }, 
+        order: Order { id: 2, price: dec!(100), quantity: 10, side: Side::Buy, user_id: Some(taker_id), order_type: OrderType::Limit }, 
         respond_to: resp_tx2 
     }).await.unwrap();
     
