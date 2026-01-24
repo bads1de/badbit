@@ -1,106 +1,18 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import OrderEntry from "@/components/OrderEntry";
 import OrderBook from "@/components/OrderBook";
 import TradeHistory from "@/components/TradeHistory";
 import PriceChart from "@/components/PriceChart";
-import { OrderBook as OrderBookType, Trade } from "@/types";
 import { Settings, ChevronDown, CheckCircle2 } from "lucide-react";
+import { useOrderBook } from "@/hooks/useOrderBook";
+import { useMarketData } from "@/hooks/useMarketData";
 
 export default function Home() {
-  const [orderBook, setOrderBook] = useState<OrderBookType>({
-    bids: {},
-    asks: {},
-  });
-  const [trades, setTrades] = useState<Trade[]>([]);
+  const { orderBook } = useOrderBook();
+  const { trades, marketStats } = useMarketData();
   const [activeTab, setActiveTab] = useState<"book" | "trades">("book");
-  const [marketStats, setMarketStats] = useState({
-    currentPrice: 0,
-    priceChange: 0,
-    priceChangePercent: 0,
-    volume24h: 0,
-    startPrice: 0,
-  });
-
-  // WebSocket接続 (OrderBookのリアルタイム更新)
-  useEffect(() => {
-    const ws = new WebSocket("ws://localhost:8000/ws");
-
-    ws.onopen = () => {
-      console.log("Connected to OrderBook WebSocket");
-    };
-
-    ws.onmessage = (event) => {
-      try {
-        const newBook: OrderBookType = JSON.parse(event.data);
-        setOrderBook(newBook);
-      } catch (e) {
-        console.error("Failed to parse WebSocket message:", e);
-      }
-    };
-
-    ws.onerror = (error) => {
-      console.error("WebSocket error:", error);
-    };
-
-    return () => {
-      ws.close();
-    };
-  }, []);
-
-  // REST APIポーリング (トレード履歴 & 統計)
-  useEffect(() => {
-    const fetchTrades = async () => {
-      try {
-        const tradesRes = await fetch("http://localhost:8000/trades");
-
-        if (tradesRes.ok) {
-          const newTrades = await tradesRes.json();
-          // 重いので最大500件程度に制限すると良いかもしれないが、一旦そのまま
-          const sortedTrades = [...newTrades].reverse();
-          setTrades(sortedTrades);
-
-          // Calculate Market Stats
-          // 注意: priceはDecimal（文字列）で来るのでparseFloatで変換
-          const currentPrice =
-            sortedTrades.length > 0 ? parseFloat(sortedTrades[0].price) : 0;
-          const now = Date.now();
-          const oneDayAgo = now - 24 * 60 * 60 * 1000;
-          const recentTrades = sortedTrades.filter(
-            (t: Trade) => t.timestamp > oneDayAgo,
-          );
-          const startPrice =
-            recentTrades.length > 0
-              ? parseFloat(recentTrades[recentTrades.length - 1].price)
-              : currentPrice;
-          const priceChange = currentPrice - startPrice;
-          const priceChangePercent =
-            startPrice > 0 ? (priceChange / startPrice) * 100 : 0;
-          const volume24h = recentTrades.reduce(
-            (acc: number, t: Trade) => acc + parseFloat(t.price) * t.quantity,
-            0,
-          );
-
-          setMarketStats({
-            currentPrice,
-            priceChange,
-            priceChangePercent,
-            volume24h,
-            startPrice,
-          });
-        }
-      } catch (err) {
-        console.error("Trades Sync error:", err);
-      }
-    };
-
-    // 初回実行
-    fetchTrades();
-    // 1秒ごとに更新
-    const interval = setInterval(fetchTrades, 1000);
-    return () => clearInterval(interval);
-  }, []);
 
   const chartTrades = [...trades].reverse().map((t) => ({
     price: parseFloat(t.price), // Decimal文字列を数値に変換

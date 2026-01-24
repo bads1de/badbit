@@ -1,6 +1,6 @@
-# badtbit
+# badbit
 
-**badtbit** は、学習目的で構築された仮想通貨取引所システムのシミュレーターです。
+**badbit** は、学習目的で構築された仮想通貨取引所システムのシミュレーターです。
 高性能なマッチングエンジン、リアルタイムのオーダーブック配信、モダンなフロントエンドUIを一通り実装しており、取引システムのアーキテクチャや並行処理（Actorモデル）の学習用リソースとして設計されています。
 
 > **Note**: 本プロジェクトは商用利用を目的としたものではなく、あくまで学習・実験用のサンドボックスです。
@@ -23,30 +23,42 @@ graph TD
 
     subgraph Frontend [Next.js App]
         UI[Trading UI]
-        WS[WebSocket Client]
+        WS_Client[WebSocket Client]
+        REST_Client[REST Client]
         Chart[Lightweight Charts]
     end
 
-    subgraph Backend [Rust Server]
-        API[Axum Web API]
-        Engine[Matching Engine (Actor)]
+    subgraph Backend [Rust Server - Axum]
+        API[REST API]
+        WS_Handler[WebSocket Handler]
+        Engine[Matching Engine Actor]
+        Account[AccountManager]
         Book[OrderBook]
         Sim[Market Simulator]
-        DB_Writer[DB Writer (Actor)]
+        DB_Writer[DB Writer Actor]
+        Broadcast[Broadcast Channel]
     end
 
     Database[(SQLite)]
 
     Client --> UI
-    UI --> WS
-    UI --> API
+    UI --> WS_Client
+    UI --> REST_Client
 
-    API -- Command --> Engine
-    WS -- Subscribe --> Engine
+    REST_Client -- HTTP Request --> API
+    WS_Client -- Connect --> WS_Handler
 
-    Engine -- Update --> Book
+    API -- Command via mpsc --> Engine
+    Engine -- Response --> API
+
+    Engine -- OrderBook Update --> Broadcast
+    Broadcast -- Subscribe --> WS_Handler
+    WS_Handler -- Push --> WS_Client
+
+    Engine --> Book
+    Engine --> Account
     Engine -- Trade/Balance --> DB_Writer
-    Sim -- Order --> Engine
+    Sim -- Order via mpsc --> Engine
 
     DB_Writer --> Database
 ```
