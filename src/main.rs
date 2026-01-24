@@ -32,7 +32,7 @@
 
 // --- 外部クレート（ライブラリ）のインポート ---
 use axum::{
-    extract::State,           // ハンドラー関数で共有状態にアクセスするため
+    extract::{State, ws::{Message, WebSocket, WebSocketUpgrade}}, // WebSocket機能を追加
     routing::{get, post},     // HTTPメソッドに応じたルーティング
     Json, Router,             // JSONレスポンスとルーター
 };
@@ -40,11 +40,10 @@ use rust_decimal::Decimal;    // 固定小数点数
 use serde::{Deserialize, Serialize}; 
 use std::sync::Arc;           // スレッド間で安全に共有できるスマートポインタ
 use std::time::SystemTime;    // UNIXタイムスタンプ取得用
-use tokio::sync::{mpsc, oneshot}; // 非同期チャネル
+use tokio::sync::{mpsc, oneshot, broadcast}; // broadcastを追加
 use tower_http::cors::CorsLayer;  // CORSヘッダーを追加するミドルウェア
 use uuid::Uuid;               // ユニークID生成
 
-// --- モジュールからのインポート ---
 // --- モジュールからのインポート ---
 use rust_matching_engine::models::{Order, Trade, Side};
 use rust_matching_engine::orderbook::OrderBook;
@@ -64,6 +63,7 @@ struct AppState {
     sender: mpsc::Sender<EngineMessage>,
     db_pool: db::DbPool,      // データベース接続プール
     user_id: Uuid,            // 現在のユーザーID（固定ユーザー）
+    broadcast_tx: broadcast::Sender<OrderBook>, // 板情報の配信チャンネル
 }
 
 // =============================================================================
@@ -203,12 +203,16 @@ async fn main() {
     // Step 3: Engine Actor（マッチングエンジン）を起動
     // =========================================================================
     let (tx, rx) = mpsc::channel::<EngineMessage>(10000);
+    // 板情報配信用のbroadcastチャネル（容量10000）- Lag対策で増やす
+    let (broadcast_tx, _) = broadcast::channel::<OrderBook>(10000);
+    
     let engine_db_tx = db_tx.clone();
+    let engine_broadcast_tx = broadcast_tx.clone();
 
     // engine::run_matching_engine は async fn なので await が必要だが、
     // ここでは spawn するので async move ブロック内で呼び出す
     tokio::spawn(async move {
-        engine::run_matching_engine(rx, engine_db_tx, account_manager).await;
+        engine::run_matching_engine(rx, engine_db_tx, account_manager, engine_broadcast_tx).await;
     });
 
     // =========================================================================
@@ -226,6 +230,7 @@ async fn main() {
         sender: tx.clone(),     // チャネルの送信側をクローン
         db_pool: db_pool.clone(), // DBプール
         user_id,                // デフォルトユーザーID
+        broadcast_tx: broadcast_tx.clone(), // broadcastチャネル
     });
 
     // ルーターを構築
@@ -234,6 +239,7 @@ async fn main() {
         .route("/trades", get(get_trades))       // GET /trades  
         .route("/order", post(create_order))     // POST /order
         .route("/balance", get(get_balance))     // GET /balance
+        .route("/ws", get(ws_handler))           // WebSocket
         .layer(CorsLayer::permissive())          // CORS許可（開発用に全許可）
         .with_state(state.clone());              // ハンドラーに状態を渡す
 
@@ -241,4 +247,61 @@ async fn main() {
     
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8000").await.unwrap();
     axum::serve(listener, app).await.unwrap();
+}
+/// WebSocketハンドラ
+/// クライアントからの接続要求を受け入れ、WebSocket接続にアップグレードする
+async fn ws_handler(
+    ws: WebSocketUpgrade,
+    State(state): State<Arc<AppState>>,
+) -> impl axum::response::IntoResponse {
+    ws.on_upgrade(|socket| handle_socket(socket, state))
+}
+
+/// WebSocket接続の実体
+/// 板情報(OrderBook)の更新をリアルタイムにクライアントへ送信する
+async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
+    // broadcastチャネルを購読（新しい受信機を作成）
+    let mut rx = state.broadcast_tx.subscribe();
+
+    loop {
+        tokio::select! {
+            // 1. 新しい板情報が配信されたら、クライアントに送信
+            result = rx.recv() => {
+                match result {
+                    Ok(orderbook) => {
+                        // JSONにシリアライズ
+                        if let Ok(json_text) = serde_json::to_string(&orderbook) {
+                            // 送信（エラーならループを抜けて切断扱い）
+                            if socket.send(Message::Text(json_text.into())).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                        // 受信が遅れている場合はスキップして継続（切断しない）
+                        eprintln!("Broadcast channel lagged by {}, skipping...", count);
+                        continue;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        eprintln!("Broadcast channel closed");
+                        break;
+                    }
+                }
+            }
+            // 2. クライアントからのメッセージ（切断検知など）
+            // これがないと、クライアントが切断してもループが止まらずリソースリークする可能性がある
+            msg = socket.recv() => {
+                match msg {
+                    Some(Ok(_)) => {
+                        // クライアントからのメッセージは無視（今回は一方通行）
+                        // 必要ならPing/Pong対応などをここに入れる
+                    }
+                    Some(Err(_)) | None => {
+                        // エラーまたは切断（None）
+                        break; 
+                    }
+                }
+            }
+        }
+    }
 }

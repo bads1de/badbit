@@ -1,115 +1,122 @@
 use rust_matching_engine::account::AccountManager;
 use rust_matching_engine::models::Side;
-use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use uuid::Uuid;
 
 #[test]
-fn test_account_manager_load_and_get_balance() {
+fn test_initial_balance() {
     let mut am = AccountManager::new();
     let user_id = Uuid::new_v4();
 
+    // 初期残高セット
     am.load_balance(user_id, "USDC", dec!(1000), dec!(0));
-    
-    let (avail, locked) = am.get_balance(&user_id, "USDC");
-    assert_eq!(avail, dec!(1000));
-    assert_eq!(locked, dec!(0));
+    am.load_balance(user_id, "BAD", dec!(50), dec!(0));
 
-    let (avail_bad, _) = am.get_balance(&user_id, "BAD");
-    assert_eq!(avail_bad, dec!(0));
+    let (usdc_avail, usdc_locked) = am.get_balance(&user_id, "USDC");
+    assert_eq!(usdc_avail, dec!(1000));
+    assert_eq!(usdc_locked, dec!(0));
+
+    let (bad_avail, bad_locked) = am.get_balance(&user_id, "BAD");
+    assert_eq!(bad_avail, dec!(50));
+    assert_eq!(bad_locked, dec!(0));
 }
 
 #[test]
-fn test_try_lock_balance_buy() {
+fn test_lock_balance_buy() {
     let mut am = AccountManager::new();
     let user_id = Uuid::new_v4();
-    // 1000 USDC available
     am.load_balance(user_id, "USDC", dec!(1000), dec!(0));
 
-    // Try to buy 10 items at price 50. Cost = 500 USDC.
-    let res = am.try_lock_balance(&user_id, Side::Buy, dec!(50), 10);
+    // 買い注文: 価格 100 * 数量 5 = 500 USDC 必要
+    let res = am.try_lock_balance(&user_id, Side::Buy, dec!(100), 5);
+    
     assert!(res.is_ok());
 
     let (avail, locked) = am.get_balance(&user_id, "USDC");
-    assert_eq!(avail, dec!(500));
-    assert_eq!(locked, dec!(500));
+    assert_eq!(avail, dec!(500)); // 1000 - 500
+    assert_eq!(locked, dec!(500)); // 0 + 500
 }
 
 #[test]
-fn test_try_lock_balance_buy_insufficient() {
+fn test_lock_balance_sell() {
+    let mut am = AccountManager::new();
+    let user_id = Uuid::new_v4();
+    am.load_balance(user_id, "BAD", dec!(20), dec!(0));
+
+    // 売り注文: 数量 10 BAD 必要
+    let res = am.try_lock_balance(&user_id, Side::Sell, dec!(100), 10);
+    
+    assert!(res.is_ok());
+
+    let (avail, locked) = am.get_balance(&user_id, "BAD");
+    assert_eq!(avail, dec!(10)); // 20 - 10
+    assert_eq!(locked, dec!(10)); // 0 + 10
+}
+
+#[test]
+fn test_lock_insufficient_funds() {
     let mut am = AccountManager::new();
     let user_id = Uuid::new_v4();
     am.load_balance(user_id, "USDC", dec!(100), dec!(0));
 
-    // Cost = 500 USDC
-    let res = am.try_lock_balance(&user_id, Side::Buy, dec!(50), 10);
+    // 残高 100 しかないのに 500 必要
+    let res = am.try_lock_balance(&user_id, Side::Buy, dec!(100), 5);
+    
     assert!(res.is_err());
-
+    
+    // 残高は変わっていないはず
     let (avail, locked) = am.get_balance(&user_id, "USDC");
-    assert_eq!(avail, dec!(100)); // Unchanged
+    assert_eq!(avail, dec!(100));
     assert_eq!(locked, dec!(0));
 }
 
 #[test]
-fn test_try_lock_balance_sell() {
-    let mut am = AccountManager::new();
-    let user_id = Uuid::new_v4();
-    // 20 BAD available
-    am.load_balance(user_id, "BAD", dec!(20), dec!(0));
-
-    // Try to sell 10 items. Locks 10 BAD.
-    let res = am.try_lock_balance(&user_id, Side::Sell, dec!(50), 10);
-    assert!(res.is_ok());
-
-    let (avail, locked) = am.get_balance(&user_id, "BAD");
-    assert_eq!(avail, dec!(10));
-    assert_eq!(locked, dec!(10));
-}
-
-#[test]
-fn test_on_trade_match_buy() {
+fn test_trade_match_buy() {
     let mut am = AccountManager::new();
     let user_id = Uuid::new_v4();
     
-    // Initial: 1000 USDC. Lock 500 for buy order.
-    am.load_balance(user_id, "USDC", dec!(500), dec!(500));
+    // 初期: 1000 USDC, 0 BAD
+    am.load_balance(user_id, "USDC", dec!(1000), dec!(0));
     am.load_balance(user_id, "BAD", dec!(0), dec!(0));
 
-    // Trade matches: Bought 10 @ 50.
-    am.on_trade_match(&user_id, Side::Buy, dec!(50), 10);
+    // 1. 注文でロック (100 * 5 = 500 USDC)
+    am.try_lock_balance(&user_id, Side::Buy, dec!(100), 5).unwrap();
 
+    // 2. 約定 (同じ価格で全量約定と仮定)
+    am.on_trade_match(&user_id, Side::Buy, dec!(100), 5);
+
+    // USDC: ロックされていた500が消費され、残りは500
     let (usdc_avail, usdc_locked) = am.get_balance(&user_id, "USDC");
-    // Locked USDC consumed.
-    assert_eq!(usdc_locked, dec!(0));
-    // NOTE: In the current implementation, available USDC doesn't change on exact match (consumed from locked).
-    // If trade price < order price, refund logic would be needed, but simplified version just consumes locked.
-    assert_eq!(usdc_avail, dec!(500)); 
+    assert_eq!(usdc_avail, dec!(500));
+    assert_eq!(usdc_locked, dec!(0)); // ロック解除
 
+    // BAD: 5 BAD 入手
     let (bad_avail, bad_locked) = am.get_balance(&user_id, "BAD");
-    // Received 10 BAD
-    assert_eq!(bad_avail, dec!(10));
+    assert_eq!(bad_avail, dec!(5));
     assert_eq!(bad_locked, dec!(0));
 }
 
 #[test]
-fn test_on_trade_match_sell() {
+fn test_trade_match_sell() {
     let mut am = AccountManager::new();
     let user_id = Uuid::new_v4();
     
-    // Initial: 20 BAD. Lock 10 for sell order.
-    am.load_balance(user_id, "BAD", dec!(10), dec!(10));
+    // 初期: 0 USDC, 10 BAD
     am.load_balance(user_id, "USDC", dec!(0), dec!(0));
+    am.load_balance(user_id, "BAD", dec!(10), dec!(0));
 
-    // Trade matches: Sold 10 @ 50. Total value 500 USDC.
-    am.on_trade_match(&user_id, Side::Sell, dec!(50), 10);
+    // 1. 注文でロック (10 BAD)
+    am.try_lock_balance(&user_id, Side::Sell, dec!(100), 10).unwrap();
 
+    // 2. 約定 (価格 100 で 10 枚売れた)
+    am.on_trade_match(&user_id, Side::Sell, dec!(100), 10);
+
+    // USDC: 100 * 10 = 1000 USDC 入手
+    let (usdc_avail, _) = am.get_balance(&user_id, "USDC");
+    assert_eq!(usdc_avail, dec!(1000));
+
+    // BAD: ロックされていた10が消費され、0に
     let (bad_avail, bad_locked) = am.get_balance(&user_id, "BAD");
-    // Locked BAD consumed
+    assert_eq!(bad_avail, dec!(0));
     assert_eq!(bad_locked, dec!(0));
-    assert_eq!(bad_avail, dec!(10));
-
-    let (usdc_avail, usdc_locked) = am.get_balance(&user_id, "USDC");
-    // Received 500 USDC
-    assert_eq!(usdc_avail, dec!(500));
-    assert_eq!(usdc_locked, dec!(0));
 }

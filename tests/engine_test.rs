@@ -4,18 +4,19 @@ use rust_matching_engine::db::DbMessage;
 use rust_matching_engine::models::{Order, Side};
 use rust_decimal_macros::dec;
 use uuid::Uuid;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot};
 
 #[tokio::test]
 async fn test_engine_place_order_no_match() {
     let (eng_tx, eng_rx) = mpsc::channel(10);
     let (db_tx, mut db_rx) = mpsc::channel(10);
+    let (broadcast_tx, _) = broadcast::channel(100);
     let user_id = Uuid::new_v4();
     let mut am = AccountManager::new();
     am.load_balance(user_id, "BAD", dec!(100), dec!(0));
     
     tokio::spawn(async move {
-        run_matching_engine(eng_rx, db_tx, am).await;
+        run_matching_engine(eng_rx, db_tx, am, broadcast_tx).await;
     });
 
     let (resp_tx, resp_rx) = oneshot::channel();
@@ -42,6 +43,7 @@ async fn test_engine_place_order_no_match() {
 async fn test_engine_match_trade() {
     let (eng_tx, eng_rx) = mpsc::channel(10);
     let (db_tx, mut db_rx) = mpsc::channel(10);
+    let (broadcast_tx, _) = broadcast::channel(100);
 
     let maker_id = Uuid::new_v4();
     let taker_id = Uuid::new_v4();
@@ -51,7 +53,7 @@ async fn test_engine_match_trade() {
     am.load_balance(taker_id, "USDC", dec!(10000), dec!(0));
 
     tokio::spawn(async move {
-        run_matching_engine(eng_rx, db_tx, am).await;
+        run_matching_engine(eng_rx, db_tx, am, broadcast_tx).await;
     });
 
     // 1. Place Maker Order

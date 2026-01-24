@@ -1,4 +1,5 @@
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, broadcast};
+use std::time::{Duration, Instant};
 use crate::models::{Order, Trade, Side};
 use crate::orderbook::OrderBook;
 use crate::account::AccountManager;
@@ -41,10 +42,16 @@ pub async fn run_matching_engine(
     mut rx: mpsc::Receiver<EngineMessage>,
     db_tx: mpsc::Sender<DbMessage>,
     mut account_manager: AccountManager,
+    broadcast_tx: broadcast::Sender<OrderBook>, // 板情報の配信チャンネル
 ) {
     let mut orderbook = OrderBook::new();
     let mut trades_history: Vec<Trade> = Vec::new();
     // account_managerはmoveされる（所有権がこのタスクに移る）
+
+    // 配信頻度制限用: 前回の配信時刻
+    let mut last_broadcast_time = Instant::now();
+    // 50msに1回（20fps）以上は配信しない
+    let broadcast_interval = Duration::from_millis(50);
 
     while let Some(msg) = rx.recv().await {
         match msg {
@@ -115,6 +122,17 @@ pub async fn run_matching_engine(
                 }
 
                 trades_history.extend(new_trades.clone());
+
+                // 板情報を全クライアントに配信
+                // エラー（誰も聞いていない場合など）は無視して良い
+                // 板情報を全クライアントに配信
+                // 高速すぎる更新による詰まりを防ぐため、一定間隔でのみ配信する
+                if last_broadcast_time.elapsed() >= broadcast_interval {
+                    // エラー（誰も聞いていない場合など）は無視して良い
+                    let _ = broadcast_tx.send(orderbook.clone());
+                    last_broadcast_time = Instant::now();
+                }
+
                 let _ = respond_to.send(new_trades);
             },
 

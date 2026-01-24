@@ -23,18 +23,41 @@ export default function Home() {
     startPrice: 0,
   });
 
+  // WebSocket接続 (OrderBookのリアルタイム更新)
   useEffect(() => {
-    const fetchData = async () => {
-      try {
-        const [obRes, tradesRes] = await Promise.all([
-          fetch("http://localhost:8000/orderbook"),
-          fetch("http://localhost:8000/trades"),
-        ]);
+    const ws = new WebSocket("ws://localhost:8000/ws");
 
-        if (obRes.ok) setOrderBook(await obRes.json());
+    ws.onopen = () => {
+      console.log("Connected to OrderBook WebSocket");
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const newBook: OrderBookType = JSON.parse(event.data);
+        setOrderBook(newBook);
+      } catch (e) {
+        console.error("Failed to parse WebSocket message:", e);
+      }
+    };
+
+    ws.onerror = (error) => {
+      console.error("WebSocket error:", error);
+    };
+
+    return () => {
+      ws.close();
+    };
+  }, []);
+
+  // REST APIポーリング (トレード履歴 & 統計)
+  useEffect(() => {
+    const fetchTrades = async () => {
+      try {
+        const tradesRes = await fetch("http://localhost:8000/trades");
 
         if (tradesRes.ok) {
           const newTrades = await tradesRes.json();
+          // 重いので最大500件程度に制限すると良いかもしれないが、一旦そのまま
           const sortedTrades = [...newTrades].reverse();
           setTrades(sortedTrades);
 
@@ -68,11 +91,14 @@ export default function Home() {
           });
         }
       } catch (err) {
-        console.error("Sync error:", err);
+        console.error("Trades Sync error:", err);
       }
     };
 
-    const interval = setInterval(fetchData, 800);
+    // 初回実行
+    fetchTrades();
+    // 1秒ごとに更新
+    const interval = setInterval(fetchTrades, 1000);
     return () => clearInterval(interval);
   }, []);
 
