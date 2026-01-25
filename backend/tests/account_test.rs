@@ -120,3 +120,33 @@ fn test_trade_match_sell() {
     assert_eq!(bad_avail, dec!(0));
     assert_eq!(bad_locked, dec!(0));
 }
+
+#[test]
+fn test_partial_trade_match() {
+    let mut am = AccountManager::new();
+    let user_id = Uuid::new_v4();
+    
+    // 初期: 1000 USDC
+    am.load_balance(user_id, "USDC", dec!(1000), dec!(0));
+    am.load_balance(user_id, "BAD", dec!(0), dec!(0));
+
+    // 1. 大きな買い注文でロック (100 * 5 = 500 USDC)
+    am.try_lock_balance(&user_id, Side::Buy, dec!(100), 5).unwrap();
+
+    // 2. 部分約定 (数量 2 だけ約定)
+    // 100 * 2 = 200 USDC 消費
+    am.on_trade_match(&user_id, Side::Buy, dec!(100), 2);
+
+    // USDC Checks:
+    // Available: 1000 (初期) - 500 (ロック) = 500
+    // Locked: 500 (初期ロック) - 200 (消費) = 300
+    // Total Should be: 500 + 300 = 800 (200使ったから正しい)
+    let (usdc_avail, usdc_locked) = am.get_balance(&user_id, "USDC");
+    assert_eq!(usdc_avail, dec!(500)); 
+    assert_eq!(usdc_locked, dec!(300));
+
+    // BAD Checks:
+    // 2 BAD 入手
+    let (bad_avail, _) = am.get_balance(&user_id, "BAD");
+    assert_eq!(bad_avail, dec!(2));
+}

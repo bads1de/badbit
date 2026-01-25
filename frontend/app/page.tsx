@@ -5,9 +5,11 @@ import OrderEntry from "@/components/OrderEntry";
 import OrderBook from "@/components/OrderBook";
 import TradeHistory from "@/components/TradeHistory";
 import PriceChart from "@/components/PriceChart";
-import { Settings, ChevronDown, CheckCircle2 } from "lucide-react";
+import { Settings, ChevronDown } from "lucide-react";
 import { useOrderBook } from "@/hooks/useOrderBook";
 import { useMarketData } from "@/hooks/useMarketData";
+
+import AssetsDisplay from "@/components/AssetsDisplay";
 
 export default function Home() {
   const { orderBook } = useOrderBook();
@@ -114,7 +116,7 @@ export default function Home() {
           <div className="h-62.5 border-t border-white/5 bg-[#13141b] flex flex-col">
             <div className="h-9 border-b border-white/5 flex items-center px-4 gap-6 text-xs font-bold text-zinc-500">
               <span className="text-white border-b-2 border-[#26E8A6] h-full flex items-center px-1 cursor-pointer">
-                Positions
+                Balances
               </span>
               <span className="hover:text-white cursor-pointer h-full flex items-center px-1">
                 Open Orders (0)
@@ -129,12 +131,7 @@ export default function Home() {
                 Funding History
               </span>
             </div>
-            <div className="flex-1 flex items-center justify-center text-zinc-600 text-xs">
-              <div className="flex flex-col items-center gap-2">
-                <CheckCircle2 className="w-8 h-8 opacity-20" />
-                <span>No open positions</span>
-              </div>
-            </div>
+            <AssetsDisplay />
           </div>
         </div>
 
