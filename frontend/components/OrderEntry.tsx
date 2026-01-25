@@ -1,119 +1,26 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { Side, Trade, BalanceResponse } from "@/types";
+import { useOrderEntry } from "@/hooks/useOrderEntry";
 
 export default function OrderEntry() {
-  const [price, setPrice] = useState("");
-  const [quantity, setQuantity] = useState("");
-  const [side, setSide] = useState<Side>("Buy");
-  const [percent, setPercent] = useState(0);
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [lastResult, setLastResult] = useState<{
-    type: "success" | "error" | "partial";
-    message: string;
-    trades: Trade[];
-  } | null>(null);
-
-  const [balances, setBalances] = useState<BalanceResponse>({
-    usdc_available: "0",
-    usdc_locked: "0",
-    bad_available: "0",
-    bad_locked: "0",
-  });
-
-  useEffect(() => {
-    const fetchBalance = async () => {
-      try {
-        const res = await fetch("http://localhost:8000/balance");
-        if (res.ok) {
-          const data = await res.json();
-          setBalances(data);
-        }
-      } catch (err) {
-        console.error("Failed to fetch balance", err);
-      }
-    };
-
-    fetchBalance();
-    const interval = setInterval(fetchBalance, 1000); // 1秒ごとに更新
-    return () => clearInterval(interval);
-  }, []);
+  const {
+    price,
+    setPrice,
+    quantity,
+    setQuantity,
+    side,
+    setSide,
+    percent,
+    setPercent,
+    isSubmitting,
+    lastResult,
+    balances,
+    placeOrder,
+  } = useOrderEntry();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!price || !quantity) return;
-
-    setIsSubmitting(true);
-    setLastResult(null);
-
-    try {
-      const res = await fetch("http://localhost:8000/order", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          // Decimalはバックエンドで文字列として受け取る
-          price: price,
-          quantity: parseInt(quantity),
-          side,
-        }),
-      });
-
-      if (res.ok) {
-        const trades: Trade[] = await res.json();
-        const totalFilled = trades.reduce((acc, t) => acc + t.quantity, 0);
-        const requestedQty = parseInt(quantity);
-
-        if (trades.length === 0) {
-          // 約定なし（指値で板に載った）
-          setLastResult({
-            type: "success",
-            message: `📋 指値注文が板に追加されました (${side} ${requestedQty} @ ${price})`,
-            trades: [],
-          });
-        } else if (totalFilled < requestedQty) {
-          // 部分約定
-          setLastResult({
-            type: "partial",
-            message: `⚡ 部分約定: ${totalFilled}/${requestedQty} 約定`,
-            trades,
-          });
-        } else {
-          // 全約定
-          const avgPrice =
-            trades.reduce(
-              (acc, t) => acc + parseFloat(t.price) * t.quantity,
-              0,
-            ) / totalFilled;
-          setLastResult({
-            type: "success",
-            message: `✅ 全約定! ${totalFilled} @ 平均 ${avgPrice.toFixed(3)}`,
-            trades,
-          });
-        }
-
-        setPrice("");
-        setQuantity("");
-        setPercent(0);
-      } else {
-        setLastResult({
-          type: "error",
-          message: "❌ 注文失敗: 残高不足の可能性があります",
-          trades: [],
-        });
-      }
-    } catch (err) {
-      console.error("Order failed", err);
-      setLastResult({
-        type: "error",
-        message: "❌ サーバー接続エラー",
-        trades: [],
-      });
-    } finally {
-      setIsSubmitting(false);
-      // 5秒後に結果を消す
-      setTimeout(() => setLastResult(null), 5000);
-    }
+    await placeOrder();
   };
 
   const availableBalance =
