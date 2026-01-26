@@ -34,6 +34,7 @@
 use axum::{
     extract::{State, ws::{Message, WebSocket, WebSocketUpgrade}}, // WebSocket機能を追加
     routing::{get, post},     // HTTPメソッドに応じたルーティング
+    response::IntoResponse,   // レスポンス変換用トレイト
     Json, Router,             // JSONレスポンスとルーター
 };
 use rust_decimal::Decimal;    // 固定小数点数
@@ -168,6 +169,37 @@ async fn create_order(
     Json(new_trades)
 }
 
+/// DELETE /order/:id - 注文をキャンセル
+async fn cancel_order(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(order_id): axum::extract::Path<u64>,
+) -> impl axum::response::IntoResponse {
+    let (resp_tx, resp_rx) = oneshot::channel();
+    
+    // エンジンにキャンセルを依頼
+    let _ = state.sender.send(EngineMessage::CancelOrder { 
+        order_id, 
+        user_id: state.user_id, // 自分の注文しかキャンセルできない
+        respond_to: resp_tx 
+    }).await;
+
+    // 結果待機
+    match resp_rx.await {
+        Ok(Some(order)) => {
+            // キャンセル成功: 削除された注文を返す
+            axum::response::Json(order).into_response()
+        },
+        Ok(None) => {
+            // 注文が見つからない (404 Not Found)
+            axum::http::StatusCode::NOT_FOUND.into_response()
+        },
+        Err(_) => {
+            // エンジンとの通信エラー (500)
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
 fn default_order_type() -> OrderType {
     OrderType::Limit
 }
@@ -245,6 +277,7 @@ async fn main() {
         .route("/orderbook", get(get_orderbook)) // GET /orderbook
         .route("/trades", get(get_trades))       // GET /trades  
         .route("/order", post(create_order))     // POST /order
+        .route("/order/{id}", axum::routing::delete(cancel_order)) // DELETE /order/{id}
         .route("/balance", get(get_balance))     // GET /balance
         .route("/ws", get(ws_handler))           // WebSocket
         .layer(CorsLayer::permissive())          // CORS許可（開発用に全許可）

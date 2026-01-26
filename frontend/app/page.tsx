@@ -9,12 +9,18 @@ import { Settings, ChevronDown } from "lucide-react";
 import { useOrderBook } from "@/hooks/useOrderBook";
 import { useMarketData } from "@/hooks/useMarketData";
 
+import OpenOrders from "@/components/OpenOrders";
 import AssetsDisplay from "@/components/AssetsDisplay";
+import { useMyOrders } from "@/hooks/useMyOrders";
 
 export default function Home() {
   const { orderBook } = useOrderBook();
   const { trades, marketStats } = useMarketData();
+  const { myOrders } = useMyOrders();
   const [activeTab, setActiveTab] = useState<"book" | "trades">("book");
+  const [activeBottomTab, setActiveBottomTab] = useState<"balances" | "orders">(
+    "balances",
+  );
 
   const chartTrades = [...trades].reverse().map((t) => ({
     price: parseFloat(t.price), // Decimal文字列を数値に変換
@@ -115,12 +121,18 @@ export default function Home() {
           {/* Bottom Panel (Balances/Orders) */}
           <div className="h-62.5 border-t border-white/5 bg-[#13141b] flex flex-col">
             <div className="h-9 border-b border-white/5 flex items-center px-4 gap-6 text-xs font-bold text-zinc-500">
-              <span className="text-white border-b-2 border-[#26E8A6] h-full flex items-center px-1 cursor-pointer">
+              <button
+                onClick={() => setActiveBottomTab("balances")}
+                className={`h-full flex items-center px-1 cursor-pointer transition-colors ${activeBottomTab === "balances" ? "text-white border-b-2 border-[#26E8A6]" : "hover:text-white"}`}
+              >
                 Balances
-              </span>
-              <span className="hover:text-white cursor-pointer h-full flex items-center px-1">
-                Open Orders (0)
-              </span>
+              </button>
+              <button
+                onClick={() => setActiveBottomTab("orders")}
+                className={`h-full flex items-center px-1 cursor-pointer transition-colors ${activeBottomTab === "orders" ? "text-white border-b-2 border-[#26E8A6]" : "hover:text-white"}`}
+              >
+                Open Orders ({myOrders.length})
+              </button>
               <span className="hover:text-white cursor-pointer h-full flex items-center px-1">
                 Twap
               </span>
@@ -131,7 +143,11 @@ export default function Home() {
                 Funding History
               </span>
             </div>
-            <AssetsDisplay />
+            {activeBottomTab === "balances" ? (
+              <AssetsDisplay />
+            ) : (
+              <OpenOrders />
+            )}
           </div>
         </div>
 

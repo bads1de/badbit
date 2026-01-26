@@ -98,4 +98,21 @@ impl AccountManager {
             }
         }
     }
+
+    /// 注文キャンセル時のロック解除
+    /// 
+    /// 指定された注文分のロックを解除し、Availableに戻します。
+    pub fn unlock_balance(&mut self, user_id: &Uuid, side: Side, price: Decimal, quantity: u64) {
+        let (asset, amount_to_unlock) = match side {
+            Side::Buy => ("USDC", price * Decimal::from(quantity)),
+            Side::Sell => ("BAD", Decimal::from(quantity)),
+        };
+
+        let user_balances = self.balances.entry(*user_id).or_default();
+        let balance = user_balances.entry(asset.to_string()).or_default();
+
+        // ロック解除: Locked -> Available
+        balance.locked -= amount_to_unlock;
+        balance.available += amount_to_unlock;
+    }
 }

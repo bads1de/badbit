@@ -27,7 +27,7 @@ pub enum OrderType {
 /// - quantity: 数量（いくつ欲しいか/売りたいか）
 /// - side: 買いか売りか
 /// - order_type: 指値か成行か
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Order {
     pub id: u64,
     #[serde(with = "rust_decimal::serde::str")] // JSONでは文字列として扱う（精度を保つため）

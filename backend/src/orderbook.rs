@@ -238,5 +238,36 @@ impl OrderBook {
         }
         trades
     }
+
+    /// 注文をキャンセルする
+    /// 
+    /// 指定されたIDの注文を板から削除し、その注文を返します。
+    /// 見つからない場合はNoneを返します。
+    /// 
+    /// 現状の実装:
+    /// - 注文IDから価格とSideがわからないため、全ての価格帯を探索する必要があります。
+    // TODO: 注文ID -> (Price, Side) のインデックスを作ってO(1)にする
+    pub fn cancel_order(&mut self, order_id: u64) -> Option<Order> {
+        // 1. 買い板(bids)を探索
+        for orders in self.bids.values_mut() {
+            if let Some(pos) = orders.iter().position(|o| o.id == order_id) {
+                let order = orders.remove(pos).unwrap();
+                // この価格の注文がなくなったらエントリー削除すべきだが、
+                // イテレータ中なのでここではできない（複雑になるため放置でも動作はする）
+                // 厳密には cleanup が必要
+                return Some(order);
+            }
+        }
+
+        // 2. 売り板(asks)を探索
+        for orders in self.asks.values_mut() {
+            if let Some(pos) = orders.iter().position(|o| o.id == order_id) {
+                let order = orders.remove(pos).unwrap();
+                return Some(order);
+            }
+        }
+
+        None
+    }
 }
 
