@@ -247,6 +247,35 @@ pub async fn save_trade(
     Ok(())
 }
 
+/// ユーザーごとの約定履歴を取得する
+pub async fn get_user_trades(pool: &DbPool, user_id: Uuid) -> Result<Vec<crate::models::Trade>, sqlx::Error> {
+    let rows: Vec<(i64, i64, String, i64, i64)> = sqlx::query_as(
+        r#"
+        SELECT maker_order_id, taker_order_id, price, quantity, timestamp 
+        FROM trades 
+        WHERE user_id = ? 
+        ORDER BY timestamp DESC 
+        LIMIT 50
+        "#
+    )
+    .bind(user_id.to_string())
+    .fetch_all(pool)
+    .await?;
+
+    let trades = rows
+        .into_iter()
+        .map(|(maker_id, taker_id, price, quantity, timestamp)| crate::models::Trade {
+            maker_id: maker_id as u64,
+            taker_id: taker_id as u64,
+            price: price.parse().unwrap_or_default(),
+            quantity: quantity as u64,
+            timestamp: timestamp as u128,
+        })
+        .collect();
+
+    Ok(trades)
+}
+
 /// DBタスクへの非同期メッセージ
 #[derive(Debug)]
 pub enum DbMessage {

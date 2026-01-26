@@ -87,6 +87,14 @@ async fn get_trades(State(state): State<Arc<AppState>>) -> Json<Vec<Trade>> {
     Json(trades)
 }
 
+/// GET /my-trades - 自分の取引履歴を取得
+async fn get_my_trades(State(state): State<Arc<AppState>>) -> Json<Vec<Trade>> {
+    let trades = db::get_user_trades(&state.db_pool, state.user_id)
+        .await
+        .unwrap_or_default();
+    Json(trades)
+}
+
 /// 残高レスポンス用の構造体
 #[derive(Serialize)]
 struct BalanceResponse {
@@ -278,6 +286,7 @@ async fn main() {
         .route("/trades", get(get_trades))       // GET /trades  
         .route("/order", post(create_order))     // POST /order
         .route("/order/{id}", axum::routing::delete(cancel_order)) // DELETE /order/{id}
+        .route("/my-trades", get(get_my_trades)) // GET /my-trades (自分の履歴)
         .route("/balance", get(get_balance))     // GET /balance
         .route("/ws", get(ws_handler))           // WebSocket
         .layer(CorsLayer::permissive())          // CORS許可（開発用に全許可）

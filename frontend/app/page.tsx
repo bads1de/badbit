@@ -13,14 +13,16 @@ import OpenOrders from "@/components/OpenOrders";
 import AssetsDisplay from "@/components/AssetsDisplay";
 import { useMyOrders } from "@/hooks/useMyOrders";
 
+import MyTradeHistory from "@/components/MyTradeHistory";
+
 export default function Home() {
   const { orderBook } = useOrderBook();
   const { trades, marketStats } = useMarketData();
   const { myOrders } = useMyOrders();
   const [activeTab, setActiveTab] = useState<"book" | "trades">("book");
-  const [activeBottomTab, setActiveBottomTab] = useState<"balances" | "orders">(
-    "balances",
-  );
+  const [activeBottomTab, setActiveBottomTab] = useState<
+    "balances" | "orders" | "history"
+  >("balances");
 
   const chartTrades = [...trades].reverse().map((t) => ({
     price: parseFloat(t.price), // Decimal文字列を数値に変換
@@ -136,17 +138,22 @@ export default function Home() {
               <span className="hover:text-white cursor-pointer h-full flex items-center px-1">
                 Twap
               </span>
-              <span className="hover:text-white cursor-pointer h-full flex items-center px-1">
+              <button
+                onClick={() => setActiveBottomTab("history")}
+                className={`h-full flex items-center px-1 cursor-pointer transition-colors ${activeBottomTab === "history" ? "text-white border-b-2 border-[#26E8A6]" : "hover:text-white"}`}
+              >
                 Trade History
-              </span>
+              </button>
               <span className="hover:text-white cursor-pointer h-full flex items-center px-1">
                 Funding History
               </span>
             </div>
             {activeBottomTab === "balances" ? (
               <AssetsDisplay />
-            ) : (
+            ) : activeBottomTab === "orders" ? (
               <OpenOrders />
+            ) : (
+              <MyTradeHistory />
             )}
           </div>
         </div>
